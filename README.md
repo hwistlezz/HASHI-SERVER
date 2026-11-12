@@ -1,5 +1,6 @@
 <div align="center">
 
+<img width="300" alt="HASHI 로고" src="https://github.com/user-attachments/assets/5298892e-9135-49bb-b2ac-5ea650c8ea88" />
 
 # HASHI Server
 
@@ -7,8 +8,7 @@
 
 **취향에 맞는 일식당을 발견하고, 예약과 방문 리뷰까지 연결하는 HASHI의 백엔드 서버입니다.**
 
-
-[서비스](https://hashi.kr) · [클라이언트 저장소](https://github.com/TEAM-HASHI/HASHI-CLIENT) · [개발 API](https://dev-api.hashi.kr) · [Swagger](https://dev-api.hashi.kr/swagger-ui/index.html) · [개발 컨벤션](docs/conventions/00-index.md)
+[서비스](https://hashi.kr) · [클라이언트 저장소](https://github.com/hwistlezz/HASHI-CLIENT) · [개발 API](https://dev-api.hashi.kr) · [Swagger](https://dev-api.hashi.kr/swagger-ui/index.html) · [개발 컨벤션](docs/conventions/00-index.md)
 
 </div>
 
@@ -17,6 +17,10 @@
 HASHI는 한국인 여행자가 일본에서 취향에 맞는 식당을 찾고 예약할 수 있도록 돕는 서비스입니다. 큐레이션으로 식당을 추천하고, 일본어로 진행되는 예약 절차를 대신 처리해 실제 방문까지 연결합니다.
 
 서버는 도메인 경계를 유지하면서도 빠르게 개발하고 배포할 수 있도록 Spring Modulith 기반 모듈러 모놀리스로 구성했습니다. 외부에는 하나의 애플리케이션으로 배포하되, 내부에서는 식당·예약·리뷰·포인트 등 각 도메인의 책임과 의존 방향을 분리합니다.
+
+<img width="960" alt="HASHI 맛집 큐레이션과 예약 화면" src="https://github.com/user-attachments/assets/cdb8f00b-8e43-41a9-9e03-c152bc3c5a9e" />
+
+<img width="960" alt="일본 맛집 큐레이션과 예약 대행 서비스 소개" src="https://github.com/user-attachments/assets/66913dff-dc2f-4c9f-894d-075095479c49" />
 
 ## Key Features
 
@@ -30,22 +34,59 @@ HASHI는 한국인 여행자가 일본에서 취향에 맞는 식당을 찾고 �
 | 콘텐츠·관리 | 매거진 배너·목록, 식당·매거진·예약·사용자 관리자 기능 |
 | 이미지 | S3 Presigned URL 일괄 발급, 클라이언트 직접 업로드, CloudFront 기반 이미지 제공 |
 
+<details>
+<summary>주요 화면 보기</summary>
+
+<img width="960" alt="맛집 탐색" src="https://github.com/user-attachments/assets/22453cb0-5cab-4d8e-95c2-743e6e80fb0c" />
+
+<img width="960" alt="식당 예약 신청" src="https://github.com/user-attachments/assets/d02a100f-44d0-4ec7-8d3f-7c2cc4b8c9aa" />
+
+<img width="960" alt="어디든지 예약" src="https://github.com/user-attachments/assets/093c808c-ab57-4439-a1be-265e8b964929" />
+
+<img width="960" alt="예약 상태 확인" src="https://github.com/user-attachments/assets/b49287ac-b8e8-4c83-81a1-951926a4e488" />
+
+<img width="960" alt="방문 후 리뷰" src="https://github.com/user-attachments/assets/caa6b47f-1b82-43d1-a5f6-bf7f470d2e5c" />
+
+</details>
+
 ## Tech Stack
 
-| 분류 | 기술 | 적용 목적 |
-| --- | --- | --- |
-| Language | Java 21 | LTS 런타임과 최신 Java 기능 활용 |
-| Framework | Spring Boot 3.5.15, Spring MVC | REST API와 애플리케이션 실행 환경 구성 |
-| Architecture | Spring Modulith 1.4.3 | 모듈 경계 검증과 도메인 간 결합도 관리 |
-| Persistence | Spring Data JPA, MySQL 8, Flyway | 영속성 처리와 버전 기반 스키마 변경 관리 |
-| Token Store | Spring Data Redis, Amazon ElastiCache | Refresh Token·온보딩 토큰의 만료 시간 기반 저장 |
-| Security | Spring Security, JWT, Kakao OAuth | 무상태 인증과 소셜 로그인 처리 |
-| API Docs | springdoc-openapi | Swagger 기반 API 명세 제공 |
-| Storage | Amazon S3, CloudFront | Presigned URL 업로드와 CDN 기반 이미지 제공 |
-| Delivery | Docker, GitHub Actions, Docker Hub | 빌드·이미지 배포·EC2 재배포 자동화 |
-| Proxy | Nginx, Certbot | Reverse Proxy와 HTTPS 적용 |
-| Observability | Actuator, Micrometer, Prometheus, Grafana, Loki, Promtail | 메트릭·로그 수집과 시각화 |
-| Test | JUnit 5, Spring Boot Test, Mockito, AssertJ, H2 | 비즈니스 로직·웹 계층·영속성·모듈 경계 검증 |
+### Core
+
+![Java 21](https://img.shields.io/badge/Java-21-E76F00?style=for-the-badge&logo=openjdk&logoColor=white)
+![Spring Boot 3.5.15](https://img.shields.io/badge/Spring_Boot-3.5.15-6DB33F?style=for-the-badge&logo=springboot&logoColor=white)
+![Spring Modulith 1.4.3](https://img.shields.io/badge/Spring_Modulith-1.4.3-6DB33F?style=for-the-badge&logo=spring&logoColor=white)
+
+### Data & Storage
+
+![Spring Data JPA](https://img.shields.io/badge/Spring_Data_JPA-6DB33F?style=for-the-badge&logo=spring&logoColor=white)
+![MySQL 8](https://img.shields.io/badge/MySQL-8-4479A1?style=for-the-badge&logo=mysql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-FF4438?style=for-the-badge&logo=redis&logoColor=white)
+![Flyway](https://img.shields.io/badge/Flyway-CC0200?style=for-the-badge&logo=flyway&logoColor=white)
+![Amazon S3](https://img.shields.io/badge/Amazon_S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white)
+![CloudFront](https://img.shields.io/badge/Amazon_CloudFront-8C4FFF?style=for-the-badge)
+
+### Security & API
+
+![Spring Security](https://img.shields.io/badge/Spring_Security-6DB33F?style=for-the-badge&logo=springsecurity&logoColor=white)
+![JWT](https://img.shields.io/badge/JWT-272727?style=for-the-badge&logo=jsonwebtokens&logoColor=white)
+![Kakao OAuth](https://img.shields.io/badge/Kakao_OAuth-FFCD00?style=for-the-badge&logo=kakao&logoColor=black)
+![OpenAPI](https://img.shields.io/badge/OpenAPI-6BA539?style=for-the-badge&logo=openapiinitiative&logoColor=white)
+
+### Infrastructure & Observability
+
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)
+![Nginx](https://img.shields.io/badge/Nginx-009639?style=for-the-badge&logo=nginx&logoColor=white)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=for-the-badge&logo=prometheus&logoColor=white)
+![Grafana](https://img.shields.io/badge/Grafana-F46800?style=for-the-badge&logo=grafana&logoColor=white)
+![Loki](https://img.shields.io/badge/Loki-2C3642?style=for-the-badge&logo=grafana&logoColor=white)
+
+### Testing
+
+![JUnit 5](https://img.shields.io/badge/JUnit-5-25A162?style=for-the-badge&logo=junit5&logoColor=white)
+![Mockito](https://img.shields.io/badge/Mockito-4A7A3C?style=for-the-badge)
+![H2](https://img.shields.io/badge/H2-09476B?style=for-the-badge)
 
 ### 주요 기술 선택
 
@@ -54,7 +95,6 @@ HASHI는 한국인 여행자가 일본에서 취향에 맞는 식당을 찾고 �
 - **Redis**: 만료 시간이 중요한 Refresh Token과 온보딩 토큰을 애플리케이션 메모리와 분리해 관리합니다.
 - **Presigned URL**: 이미지 파일이 API 서버를 거치지 않고 S3로 직접 업로드되도록 해 서버의 네트워크 부하를 줄입니다.
 - **Prometheus·Loki·Grafana**: 요청 지연과 자원 상태를 메트릭으로, 요청별 실행 흐름을 로그로 함께 추적합니다.
-
 
 ## Modular Monolith
 

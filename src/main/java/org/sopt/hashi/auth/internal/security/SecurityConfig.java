@@ -3,7 +3,6 @@ import org.sopt.hashi.auth.internal.kakao.KakaoProperties;
 import org.sopt.hashi.auth.internal.jwt.JwtProperties;
 
 import java.util.List;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -27,20 +26,30 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  */
 @Configuration
 @EnableWebSecurity
-@EnableConfigurationProperties({JwtProperties.class, KakaoProperties.class})
+@EnableConfigurationProperties({JwtProperties.class, KakaoProperties.class, CorsProperties.class})
 public class SecurityConfig {
 
     private static final String ONBOARDING_PATH = "/api/v1/users/onboarding";
     /** 내 인증 정보 조회 — /api/v1/auth/**(permitAll) 아래에 있지만 인증이 필요해 예외로 먼저 매칭한다. */
-    private static final String AUTH_ME_PATH = "/api/v1/auth/me";
-    private static final String[] PUBLIC_PATHS = {
+    static final String AUTH_ME_PATH = "/api/v1/auth/me";
+    /** presigned URL 발급 — 온보딩(프로필 사진 업로드) 단계에서도 필요해 임시 권한까지 허용한다. */
+    private static final String UPLOAD_PATH = "/api/v1/uploads/**";
+    /** 공개 경로 단일 소스 — {@link SwaggerAuthorizationCustomizer}가 같은 목록으로 문서 자물쇠를 판정한다. */
+    static final String[] PUBLIC_PATHS = {
             "/swagger-ui/**",
             "/swagger-ui.html",
             "/v3/api-docs/**",
             "/actuator/health",
             "/actuator/health/**",
-            "/api/v1/auth/**"          // 로그인·재발급(후속) — 토큰 없이 접근
-            // TODO(후속): 온보딩 경로는 임시 권한(ROLE_ONBOARDING)으로 별도 규칙 추가
+            // Prometheus 스크레이핑용 — 앱 포트는 호스트 127.0.0.1 바인딩이라 외부 직접 접근이 불가하고
+            // 같은 도커 네트워크의 Prometheus만 수집한다. 리버스 프록시가 /actuator를 라우팅하면 안 된다.
+            "/actuator/prometheus",
+            "/api/v1/auth/**",         // 로그인·재발급(후속) — 토큰 없이 접근
+            // 비로그인 탐색 화면(#93) — 식당 조회(하위 리뷰 목록 포함)와 매거진 조회는 공개
+            "/api/v1/restaurants/**",
+            "/api/v1/magazines/**",
+            // 개발용 더미데이터 생성 — 컨트롤러가 local·dev 프로필 전용이라 운영에서는 404다
+            "/api/v1/dev/**"
     };
 
     @Bean
@@ -61,6 +70,7 @@ public class SecurityConfig {
                         .requestMatchers(AUTH_ME_PATH).hasAnyRole("USER", "ADMIN", "ONBOARDING")
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .requestMatchers(ONBOARDING_PATH).hasRole("ONBOARDING")
+                        .requestMatchers(UPLOAD_PATH).hasAnyRole("USER", "ADMIN", "ONBOARDING")
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         // 역할을 명시해 온보딩 임시 권한(ROLE_ONBOARDING)의 일반 API 접근을 차단하고(auth.md §4),
                         // 어드민 토큰도 일반 사용자 API를 호출하지 못하게 한다(adminId가 userId로 오인되는 것 방지 —
@@ -80,16 +90,14 @@ public class SecurityConfig {
     }
 
     /**
-     * 리프레시 쿠키(HttpOnly) 전송을 위해 allowCredentials를 켠다 — 오리진은 와일드카드 불가, 정확한 도메인만 나열한다.
-     * 허용 오리진은 환경별로 다르므로 설정(hashi.cors.allowed-origins, env CORS_ALLOWED_ORIGINS)으로 주입한다.
+     * 리프레시 쿠키(HttpOnly) 전송을 위해 allowCredentials를 켠다.
+     * 고정 도메인은 allowed-origins에 정확히 나열하고, 동적 Preview 도메인만 제한된 allowed-origin-patterns로 허용한다.
      */
     @Bean
-    public CorsConfigurationSource corsConfigurationSource(
-            @Value("${hashi.cors.allowed-origins}") List<String> allowedOrigins) {
-        CorsConfiguration configuration = new CorsConfiguration();
+    public CorsConfigurationSource corsConfigurationSource(CorsProperties corsProperties) {
+        CorsConfiguration configuration = corsProperties.createCorsConfiguration();
 
         // 프론트엔드 도메인 허용
-        configuration.setAllowedOrigins(allowedOrigins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         // 교차 출처에서 프론트가 응답의 액세스 토큰(Authorization 헤더)을 읽을 수 있게 노출한다.

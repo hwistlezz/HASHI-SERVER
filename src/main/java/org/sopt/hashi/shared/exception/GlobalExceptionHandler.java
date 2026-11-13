@@ -1,6 +1,7 @@
 package org.sopt.hashi.shared.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import java.util.List;
 import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +35,9 @@ public class GlobalExceptionHandler {
             BusinessException e,
             HttpServletRequest request) {
         ErrorCode code = e.getErrorCode();
+        // 예상된 흐름(4xx)이라 스택트레이스는 남기지 않는다 — 에러코드별 발생 빈도·패턴 관측용
+        log.warn("Business exception. code={} status={} uri={}",
+                code.getCode(), code.getStatus().value(), request.getRequestURI());
         return ResponseEntity.status(code.getStatus())
                 .body(ErrorResponse.of(code, request.getRequestURI()));
     }
@@ -106,6 +110,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<ErrorResponse> handleHandlerMethodValidation(
             HandlerMethodValidationException e,
+            HttpServletRequest request) {
+        return ResponseEntity.status(CommonErrorCode.INVALID_INPUT.getStatus())
+                .body(ErrorResponse.of(CommonErrorCode.INVALID_INPUT, request.getRequestURI()));
+    }
+    // @Validated 기반 컨트롤러 메서드 파라미터 제약 위반 (400) — 예: @Positive PathVariable
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleConstraintViolation(
+            ConstraintViolationException e,
             HttpServletRequest request) {
         return ResponseEntity.status(CommonErrorCode.INVALID_INPUT.getStatus())
                 .body(ErrorResponse.of(CommonErrorCode.INVALID_INPUT, request.getRequestURI()));

@@ -85,6 +85,7 @@ public class ReservationService {
                 request.adultCount(), request.teenCount(), request.childCount(), request.requestNote(),
                 usedPoint, request.amount()));
         usePointIfAny(userId, reservation);
+        logCreated(reservation);
         return toResponse(reservation);
     }
 
@@ -99,7 +100,15 @@ public class ReservationService {
                 request.adultCount(), request.teenCount(), request.childCount(), request.requestNote(),
                 usedPoint, request.amount()));
         usePointIfAny(userId, reservation);
+        logCreated(reservation);
         return toResponse(reservation);
+    }
+
+    /** 결제 흐름(수수료·포인트)의 시작점이라 금액 확인이 필요한 문의 대응의 기준 기록이 된다. */
+    private void logCreated(Reservation reservation) {
+        log.info("예약 생성. reservationId={}, type={}, restaurantId={}, usedPoint={}, amount={}",
+                reservation.getId(), reservation.getReservationType(), reservation.getRestaurantId(),
+                reservation.getUsedPoint(), reservation.getAmount());
     }
 
     /**
@@ -116,6 +125,7 @@ public class ReservationService {
         boolean refundable = reservation.refundableOnCancel();   // 전이 전에 판정
         reservation.cancel();
         restoreUsedPointIfRefundable(reservation, refundable);
+        log.info("예약 취소. reservationId={}, refundable={}", reservationId, refundable);
         return toResponse(reservation);
     }
 
@@ -127,9 +137,8 @@ public class ReservationService {
         boolean restorable = refundable && reservation.usedPointExists()
                 && !pointPort.isRestored(PointSourceType.RESERVATION, reservation.getId());
         if (restorable) {
+            // 복원 자체의 기록(금액·원장)은 point 모듈이 남긴다 — 여기서 중복 로깅하지 않는다
             pointPort.restore(reservation.getUserId(), PointSourceType.RESERVATION, reservation.getId());
-            log.info("예약 취소 포인트 복원. reservationId={}, userId={}, amount={}",
-                    reservation.getId(), reservation.getUserId(), reservation.getUsedPoint());
         }
     }
 
@@ -161,8 +170,16 @@ public class ReservationService {
         boolean hasNext = rows.size() > pageSize;
         List<Reservation> page = hasNext ? rows.subList(0, pageSize) : rows;
         Long nextCursor = hasNext ? page.getLast().getId() : null;
+        long totalCount = countByFilter(userId, filter);
 
-        return new ReservationListResponse(toResponses(page), nextCursor, hasNext);
+        return new ReservationListResponse(toResponses(page), totalCount, nextCursor, hasNext);
+    }
+
+    /** 필터 조건에 맞는 전체 건수 — 커서(페이지 위치)와 무관한 총 row 수. */
+    private long countByFilter(Long userId, ReservationStatusFilter filter) {
+        return (filter == null)
+                ? reservationRepository.countByUserId(userId)
+                : reservationRepository.countByUserIdAndReservationStatusIn(userId, filter.statuses());
     }
 
     /** 페이지 단위 응답 변환 — STANDARD 식당 요약(이름·대표이미지)은 포트 다건 조회(findSummaries)로 한 번에 enrich한다(N+1 방지, §5-2). */

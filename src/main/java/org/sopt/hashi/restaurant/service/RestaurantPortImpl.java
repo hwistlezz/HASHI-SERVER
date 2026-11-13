@@ -8,6 +8,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.sopt.hashi.restaurant.AdminRestaurantCommand;
+import org.sopt.hashi.restaurant.AdminRestaurantInfo;
 import org.sopt.hashi.restaurant.RestaurantDetailInfo;
 import org.sopt.hashi.restaurant.RestaurantInfo;
 import org.sopt.hashi.restaurant.RestaurantPort;
@@ -22,10 +24,13 @@ import org.springframework.transaction.annotation.Transactional;
 class RestaurantPortImpl implements RestaurantPort {
 
     private final RestaurantRepository restaurantRepository;
+    private final RestaurantService restaurantService;
     private final FileStorage fileStorage;
 
-    RestaurantPortImpl(RestaurantRepository restaurantRepository, FileStorage fileStorage) {
+    RestaurantPortImpl(RestaurantRepository restaurantRepository, RestaurantService restaurantService,
+                       FileStorage fileStorage) {
         this.restaurantRepository = restaurantRepository;
+        this.restaurantService = restaurantService;
         this.fileStorage = fileStorage;
     }
 
@@ -76,6 +81,40 @@ class RestaurantPortImpl implements RestaurantPort {
         }
         return restaurantRepository.findById(restaurantId)
                 .map(this::toDetailInfo);
+    }
+
+    @Override
+    @Transactional
+    public void increaseReviewStatistics(Long restaurantId, int rating) {
+        if (restaurantRepository.increaseReviewStatistics(restaurantId, rating) == 0) {
+            throw new IllegalStateException("리뷰 통계를 갱신할 식당을 찾을 수 없습니다.");
+        }
+    }
+
+    @Override
+    @Transactional
+    public void decreaseReviewStatistics(Long restaurantId, int rating) {
+        if (restaurantRepository.decreaseReviewStatistics(restaurantId, rating) == 0) {
+            throw new IllegalStateException("차감할 식당 리뷰 통계가 올바르지 않습니다.");
+        }
+    }
+
+    @Override
+    @Transactional
+    public AdminRestaurantInfo createByAdmin(AdminRestaurantCommand command) {
+        return restaurantService.createByAdmin(command);
+    }
+
+    @Override
+    @Transactional
+    public AdminRestaurantInfo updateByAdmin(Long restaurantId, AdminRestaurantCommand command) {
+        return restaurantService.updateByAdmin(restaurantId, command);
+    }
+
+    @Override
+    @Transactional
+    public void deleteByAdmin(Long restaurantId) {
+        restaurantService.deleteByAdmin(restaurantId);
     }
 
     private RestaurantInfo toInfo(Restaurant restaurant) {

@@ -10,8 +10,8 @@ public final class RestaurantSpecifications {
     private RestaurantSpecifications() {
     }
 
-    public static Specification<Restaurant> active() {
-        return (root, query, criteriaBuilder) -> criteriaBuilder.isTrue(root.get("active"));
+    public static Specification<Restaurant> notDeleted() {
+        return (root, query, criteriaBuilder) -> criteriaBuilder.isFalse(root.get("deleted"));
     }
 
     public static Specification<Restaurant> cursorAfter(RestaurantCursor cursor) {
@@ -22,9 +22,14 @@ public final class RestaurantSpecifications {
             return switch (cursor.sort()) {
                 case BASIC -> criteriaBuilder.lessThan(root.get("id"), cursor.id());
                 case POPULAR -> criteriaBuilder.or(
-                        criteriaBuilder.lessThan(root.get("popularityScore"), cursor.popularityScore()),
+                        criteriaBuilder.lessThan(root.get("reviewCount"), cursor.reviewCount()),
                         criteriaBuilder.and(
-                                criteriaBuilder.equal(root.get("popularityScore"), cursor.popularityScore()),
+                                criteriaBuilder.equal(root.get("reviewCount"), cursor.reviewCount()),
+                                criteriaBuilder.lessThan(root.get("rating"), cursor.rating())
+                        ),
+                        criteriaBuilder.and(
+                                criteriaBuilder.equal(root.get("reviewCount"), cursor.reviewCount()),
+                                criteriaBuilder.equal(root.get("rating"), cursor.rating()),
                                 criteriaBuilder.lessThan(root.get("id"), cursor.id())
                         )
                 );

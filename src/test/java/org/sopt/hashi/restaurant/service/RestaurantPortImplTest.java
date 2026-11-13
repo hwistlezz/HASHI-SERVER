@@ -15,8 +15,11 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.sopt.hashi.restaurant.RestaurantDetailInfo;
 import org.sopt.hashi.restaurant.RestaurantInfo;
+import org.sopt.hashi.restaurant.domain.PriceCurrency;
 import org.sopt.hashi.restaurant.domain.Restaurant;
+import org.sopt.hashi.restaurant.domain.RestaurantFoodCategory;
 import org.sopt.hashi.restaurant.domain.RestaurantGenre;
+import org.sopt.hashi.restaurant.domain.RestaurantImage;
 import org.sopt.hashi.restaurant.domain.RestaurantRepository;
 import org.sopt.hashi.shared.storage.FileStorage;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -28,13 +31,16 @@ class RestaurantPortImplTest {
     private RestaurantRepository restaurantRepository;
 
     @Mock
+    private RestaurantService restaurantService;
+
+    @Mock
     private FileStorage fileStorage;
 
     private RestaurantPortImpl restaurantPort;
 
     @BeforeEach
     void setUp() {
-        restaurantPort = new RestaurantPortImpl(restaurantRepository, fileStorage);
+        restaurantPort = new RestaurantPortImpl(restaurantRepository, restaurantService, fileStorage);
     }
 
     @Test
@@ -109,15 +115,17 @@ class RestaurantPortImplTest {
                 "히마와리 스시",
                 "Himawari Sushi",
                 "식당 소개",
+                "매장 상세 설명",
                 "도쿄도 신주쿠구",
                 "도쿄",
                 RestaurantGenre.SUSHI,
-                "restaurants/%d/thumbnail.jpg".formatted(id),
-                4_000L,
-                "JPY",
+                RestaurantFoodCategory.SUSHI,
+                PriceCurrency.JPY,
                 BigDecimal.valueOf(1000),
                 BigDecimal.valueOf(3000)
         );
+        restaurant.replaceImages(List.of(
+                RestaurantImage.create("restaurants/%d/thumbnail.jpg".formatted(id), 1)));
         ReflectionTestUtils.setField(restaurant, "id", id);
         return restaurant;
     }

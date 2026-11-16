@@ -18,13 +18,6 @@ public class LocationMaintenanceReader {
             FROM restaurant r LEFT JOIN restaurant_location l ON l.id = r.location_id
             WHERE r.id > ? AND r.id <= ? ORDER BY r.id LIMIT ?
             """;
-    static final String PURGE_SQL = """
-            SELECT r.id, r.deleted, l.address_revision, l.request_id, l.status, l.source,
-                l.obtained_at, l.valid_until
-            FROM restaurant_location l JOIN restaurant r ON r.location_id = l.id
-            WHERE l.status = 'READY' AND l.source = 'GOOGLE_GEOCODING' AND l.valid_until <= ?
-            ORDER BY l.valid_until, l.id LIMIT ?
-            """;
     private static final DateTimeFormatter SQL_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
     private final JdbcTemplate jdbc;
 
@@ -48,18 +41,6 @@ public class LocationMaintenanceReader {
     Long nextId(long after, long upper) {
         return jdbc.query("SELECT id FROM restaurant WHERE id > ? AND id <= ? ORDER BY id LIMIT 1",
                 (rs, row) -> rs.getLong(1), after, upper).stream().findFirst().orElse(null);
-    }
-
-    List<Candidate> purgeCandidates(LocalDateTime cutoff, int limit) {
-        // Bind UTC calendar text. setTimestamp would depend on the JDBC/session timezone.
-        return jdbc.query(PURGE_SQL, LocationMaintenanceReader::candidate, sqlTime(cutoff), limit);
-    }
-
-    long purgeRemaining(LocalDateTime cutoff) {
-        return jdbc.queryForObject("""
-                SELECT COUNT(*) FROM restaurant_location l JOIN restaurant r ON r.location_id=l.id
-                WHERE l.status='READY' AND l.source='GOOGLE_GEOCODING' AND l.valid_until <= ?
-                """, Long.class, sqlTime(cutoff));
     }
 
     static String sqlTime(LocalDateTime time) {

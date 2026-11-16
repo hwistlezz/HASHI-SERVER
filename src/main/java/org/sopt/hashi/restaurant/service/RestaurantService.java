@@ -33,6 +33,9 @@ import org.sopt.hashi.media.MediaImageRole;
 import org.sopt.hashi.media.MediaImageSelection;
 import org.sopt.hashi.media.MediaPort;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand;
+import org.sopt.hashi.restaurant.RestaurantMapInfo;
+import org.sopt.hashi.restaurant.domain.RestaurantMapCandidate;
+import org.sopt.hashi.restaurant.dto.RestaurantMapPageResponse.MapCardResponse;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.BusinessHourCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.ImageCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.MenuCommand;
@@ -177,6 +180,27 @@ public class RestaurantService {
                 nextCursor,
                 hasNext
         );
+    }
+
+    /** 지도 페이지도 기존 카드 변환을 공유하되 순위 값은 최초 세션 값을 사용한다. */
+    public List<MapCardResponse> findMapCards(List<RestaurantMapCandidate> candidates,
+                                            Map<Long, RestaurantMapInfo> mapInfos) {
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+        List<Restaurant> restaurants = restaurantRepository.findAllByIdInAndDeletedFalse(
+                candidates.stream().map(RestaurantMapCandidate::restaurantId).toList());
+        var byId = restaurants.stream().collect(Collectors.toMap(Restaurant::getId, Function.identity()));
+        LocalDate businessDate = LocalDate.now(japanClock);
+        var hours = findBusinessHours(restaurants, businessDate.getDayOfWeek());
+        var media = loadRestaurantProjection(restaurants, MediaImageRole.RESTAURANT_CARD, 3);
+        return candidates.stream().map(candidate -> {
+            Restaurant restaurant = byId.get(candidate.restaurantId());
+            return MapCardResponse.from(toSummaryResponse(restaurant, businessDate, hours.get(restaurant.getId()), media),
+                    candidate, restaurant.getPlaceType().value(), new PriceRangeResponse(
+                            restaurant.getPriceCurrency().value(), toWholeAmount(restaurant.getMinPrice()),
+                            toWholeAmount(restaurant.getMaxPrice())), mapInfos.get(restaurant.getId()).location());
+        }).toList();
     }
 
     public RestaurantSearchSuggestionResponse getSearchSuggestions(String keyword, Integer size) {
@@ -359,6 +383,12 @@ public class RestaurantService {
     /** 어드민 식당 등록 — 필수 값 형식 검증은 admin 요청 DTO가, 도메인 값 해석·저장은 여기가 담당한다. */
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public AdminRestaurantInfo createByAdmin(AdminRestaurantCommand command) {
+        return createByAdmin(command, null);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public AdminRestaurantInfo createByAdmin(AdminRestaurantCommand command,
+                                            PlacesLocationService.CreationSelection selection) {
         validateRequiredForCreate(command);
 
         List<RestaurantImage> images = toImagesForCreate(command);
@@ -383,6 +413,7 @@ public class RestaurantService {
                 command.summary(),
                 command.description(),
                 command.address(),
+                command.geocodingAddress(),
                 command.area(),
                 toGenre(command.genre()),
                 command.foodCategory(),
@@ -401,7 +432,11 @@ public class RestaurantService {
 
         reconcileMediaBindings(claims, List.of());
         Restaurant saved = restaurantRepository.save(restaurant);
-        locationService.enqueue(saved);
+        if (selection == null) {
+            locationService.enqueue(saved);
+        } else {
+            locationService.enqueueSelectedPlace(saved, selection.placeId(), selection.adminId());
+        }
         restaurantRepository.flush();
         // 생성된 id는 응답 body에만 있어 로그로 남겨야 추적 가능하다 (adminId는 MDC)
         log.info("어드민 식당 등록. restaurantId={}", saved.getId());
@@ -422,7 +457,10 @@ public class RestaurantService {
         validateExclusiveImageCollections(command.imageKeys(), command.images());
         Restaurant restaurant = findRestaurantForAdminUpdate(restaurantId);
 
-        boolean addressChanged = command.address() != null && !command.address().equals(restaurant.getAddress());
+        String previousGeocodingInput = restaurant.geocodingAddressForResolution();
+        String previousName = restaurant.getName();
+        String previousLocalName = restaurant.getLocalName();
+        String previousAddress = restaurant.getAddress();
 
         RestaurantGenre genre = command.genre() == null ? null : toGenre(command.genre());
         RestaurantPlaceType placeType = command.placeType() == null ? null : toPlaceType(command.placeType());
@@ -460,6 +498,7 @@ public class RestaurantService {
                 command.summary(),
                 command.description(),
                 command.address(),
+                command.geocodingAddress(),
                 command.area(),
                 genre,
                 command.foodCategory(),
@@ -468,7 +507,11 @@ public class RestaurantService {
                 command.minPrice(),
                 command.maxPrice());
 
-        if (addressChanged && !restaurant.isDeleted()) {
+        boolean geocodingInputChanged = !Objects.equals(
+                previousGeocodingInput, restaurant.geocodingAddressForResolution());
+        if ((geocodingInputChanged || !Objects.equals(previousName, restaurant.getName())
+                || !Objects.equals(previousLocalName, restaurant.getLocalName())
+                || !Objects.equals(previousAddress, restaurant.getAddress())) && !restaurant.isDeleted()) {
             locationService.enqueue(restaurant);
         }
 
@@ -820,6 +863,10 @@ public class RestaurantService {
                 || command.images() != null
                 || !hasExactlyOneCreateImageSource(command.imageKeys(), command.imageAssetIds())
                 || command.hashtags() == null || command.hashtags().isEmpty();
+        if (command.geocodingAddress() != null
+                && Restaurant.normalizeGeocodingAddress(command.geocodingAddress()) == null) {
+            missingRequired = true;
+        }
         if (missingRequired) {
             throw new BusinessException(CommonErrorCode.INVALID_INPUT);
         }
@@ -1323,6 +1370,7 @@ public class RestaurantService {
                 restaurant.getSummary(),
                 restaurant.getDescription(),
                 restaurant.getAddress(),
+                restaurant.getGeocodingAddress(),
                 restaurant.getArea(),
                 restaurant.getGenre().value(),
                 restaurant.getFoodCategory(),

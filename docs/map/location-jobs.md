@@ -3,41 +3,65 @@
 ## 관리자 계약
 
 기존 등록은 201 `ADMIN-204`, 수정은 200 `ADMIN-205`다. 식당 정보와 위치 작업을 저장하면 성공한다.
-응답에 `locationStatus`, `addressRevision`을 추가한다. Google의 위치 확인 성공을 뜻하지 않는다.
+응답에 `geocodingAddress`, `locationStatus`, `addressRevision`을 추가한다.
+`geocodingAddress`는 저장된 명시 값이며 null이면 서버가 표시용 `address`를 위치 확인 입력으로 사용한다.
+Google의 위치 확인 성공을 뜻하지 않는다.
+
+- `address`는 사용자에게 보여 줄 전체 주소를 원문 그대로 보존한다.
+- 등록의 `geocodingAddress`는 선택이다. 표시 주소와 다른 provider 입력이 필요할 때 명시하며,
+  서버는 저장 문자열에서 건물명이나 층을 추측해 제거하거나 일본어로 번역하지 않는다.
+- 수정에서 `geocodingAddress` 미전송 또는 null은 유지, 공백 문자열은 명시 값 삭제다.
+  명시 값은 앞뒤 공백을 제거해 저장한다.
+- 표시 주소를 바꾸면서 `geocodingAddress`를 생략하면 과거 기본 주소를 자동으로 신뢰하지 않고 삭제한다.
+  새 표시 주소가 fallback 입력이 되며, 이전 위치 작업과 결과는 새 revision에 적용되지 않는다.
+- 표시 주소를 바꿔도 같은 기본 주소를 유지하려면 응답의 `geocodingAddress`를 수정 요청에 함께 보낸다.
+- 이름·현지명·표시 주소 또는 실제 위치 확인 입력이 바뀌면 `addressRevision`이 증가하고 다시 확인한다.
+  같은 기본 주소를 보내도 건물명·층 등 표시 주소가 바뀌면 기존 핀과 확인 기록을 지운다.
+  같은 값을 다시 보내거나 가격·소개만 바꾸는 요청은 기존 좌표와 진행 중 작업을 보존한다.
 
 - `GET /api/v1/admin/restaurants/{id}/location`: 200 `COMMON-200`.
 - `POST /api/v1/admin/restaurants/{id}/location/retry`: body `{"expectedAddressRevision":1}`,
   200 `COMMON-200`. 누락/음수 revision은 400, 현재 revision 불일치/READY는 409 `RESTAURANT-019`.
-- 두 경로 모두 기존 SecurityFilterChain의 ADMIN 권한을 사용한다. 삭제/없는 식당은 `RESTAURANT-004`.
-- 상태 응답: `restaurantId`, `locationStatus`, `addressRevision`, `validUntil`, `attempt`,
-  `nextAttemptAt`, `failureCode`, `canRetry`. 시각은 UTC ISO-8601, Cache-Control은 no-store.
+- `GET /api/v1/admin/restaurants/locations`: `status`(기본 `REVIEW_REQUIRED`)와 선택 `source`로 필터링하고
+  `restaurantId ASC`로 조회한다. 관리자 목록 표준에 따라 0-based `page`(기본 0), `size`(기본 20, 최대 100)를
+  사용하며 응답은 `restaurants`, `page`, `size`, `totalCount`, `totalPages`다. 한 응답의 목록과 총건수는 같은
+  DB snapshot을 사용한다. `page × size`가 32-bit offset 상한을 넘으면 400이며, 처리 중 상태가 바뀌면 페이지
+  사이 결과가 달라질 수 있으므로 처리 후 현재 페이지를 다시 조회한다.
+- 세 경로 모두 기존 SecurityFilterChain의 ADMIN 권한을 사용한다. 삭제/없는 식당은 `RESTAURANT-004`.
+- 시설 후보 검색과 선택, Place ID 결합, 별도 SEARCH/DETAILS 예산은 [Places 후보 선택](place-selection.md)을 따른다.
+- 상태 응답: `restaurantId`, `locationStatus`, `addressRevision`, `source`, `verificationMode`, `validUntil`, `attempt`,
+  `nextAttemptAt`, `failureCode`, `canRetry`, `confirmationMethod`, `confirmedByAdminId`, `confirmedAt`,
+  `confirmedRevision`. 시각은 UTC ISO-8601, Cache-Control은 no-store.
+  Places 선택의 `confirmedAt`은 관리자 선택 접수 시각이며 좌표 취득 완료를 뜻하지 않는다. 선택 직후 `source`는 null이고,
+  Places Details 검증에 성공해 좌표를 저장하면 `GOOGLE_PLACES`가 된다.
 - UNRESOLVED의 revision은 0, attempt는 0이다. PENDING 재처리는 기존 작업을 반환한다.
   READY는 갱신 API 범위이며 일반 재처리로 받지 않는다. 좌표/주소/provider 원문/lease는 반환하지 않는다.
 
 ## 자동 채택 범위
 
-v1은 **일본어로 행정구역과 동·번지가 완전하게 입력된 도쿄 주소**를 자동 채택한다.
-합성 주소 fixture는 `東京都試験区架空町1丁目2番3号`와 같은 모양이며 실제 식당 주소가 아니다.
+v1은 언어·건물명·층수와 Google result type 이름으로 주소를 제한하지 않고, 다음 안전 조건을 모두 통과한
+**유일한 도쿄 rooftop 후보**를 자동 채택한다. 합성 fixture는 실제 식당 주소가 아니다.
 
-1. 후보가 정확히 하나, countryCode와 country component가 JP, administrativeArea와
-   administrative_area_level_1이 東京都여야 한다. 별도 설정된 지원 BBOX에도 원본 좌표가 포함돼야 한다.
-2. ROOFTOP과 street_address/premise 유형을 모두 요구한다.
-3. administrative_area_level_1 → locality → sublocality_level_1~4 → route → street_number 순서의
-   구성 요소를 합친다. 필수 행정구역 누락, 같은 유형 중복, 알 수 없는 구성 요소는 확인 필요다.
-   street_number가 없을 때만 숫자로만 구성된 단일 premise를 마지막 번지로 비교한다.
-   반각·전각 숫자만 허용하며 건물명, 영숫자 혼합, street_number와 동시 존재는 확인 필요다.
-   이는 Google 응답 형태를 지원하는 Hashi 정책이며, 아래의 전체 주소 일치 조건은 그대로 적용한다.
-4. NFKC 전각 숫자, 공백, 명시된 하이픈, 숫자 뒤 丁目/番/番地/号만 정규화한다. 결과는 행정구역 뒤
-   세 숫자(정/번/호)인 완전 주소여야 하며 원래 주소와 **전체가 정확히 일치**해야 한다.
-   선택적인 日本 접두사와 응답 postal_code와 정확히 같은 〒 접두사만 허용한다.
-5. 일본어↔로마자/한국어 번역, 편집 거리/유사도, 부분 포함 비교, 첫 후보 선택은 하지 않는다.
-   건물명/층수나 다른 표기가 남아 확신할 수 없으면 REVIEW_REQUIRED다. 관광 지역 ID는 추론하지 않는다.
-6. 원본 위도/경도 범위를 먼저 검사한 후 HALF_UP으로 소수점 6자리까지 반올림한다.
+1. 위도·경도가 원본 상태에서 유효하고, `countryCode`가 존재하며 `JP`, 고정된 응답 언어에 따른
+   `administrativeArea`가 `Tokyo` 또는 `東京都`이고 별도 설정된 지원 BBOX 안이어야 한다.
+   countryCode 누락은 다른 국가와 구분해 운영 코드로 남긴다.
+2. `granularity=ROOFTOP`을 요구한다. `street_address`, `premise`, 쇼핑몰·POI 같은 result type과
+   component allowlist는 채택 조건으로 사용하지 않는다.
+3. 입력과 provider component 양쪽에서 우편번호 또는 본번을 하나로 확실히 추출할 수 있을 때만 충돌을
+   거절한다. 丁目/Chome/chōme, 番/番地, 号와 2~3구간 하이픈 표기를 비교하며 provider가 마지막 숫자만 확실히
+   준 경우에는 그 suffix만 비교한다. 같은 의미의 component에 서로 다른 값이 여러 개면 충돌로 거절한다.
+   건물 층 표기와 `subpremise`는 비교에서 제외하되 저장 입력은 바꾸지 않는다.
+4. 우편번호·본번이 없거나 애매하면 이를 일치한다고 단정하지 않고 conflict veto만 생략한다. 전체 주소 문자열
+   동등성, 세 숫자 강제, 번역·유사도·부분 포함 비교는 하지 않는다.
+5. 위 조건을 통과한 후보가 하나면 채택한다. 반올림 전 위도·경도가 숫자로 정확히 같은 중복 응답만
+   하나의 위치로 취급하고, 서로 다른 좌표가 둘 이상이면 `AMBIGUOUS_RESULTS`다. 근접 좌표를 합치거나 첫 후보를
+   임의 선택하지 않는다.
+6. 채택 후 HALF_UP으로 소수점 6자리까지 반올림한다.
 
 이는 [Google v4 결과 필드](https://developers.google.com/maps/documentation/geocoding/reference/rest/v4/GeocodeResult)를
 이용한 Hashi의 채택 정책이다. [v4 이전 문서](https://developers.google.com/maps/documentation/geocoding/geocoding-v4-migrate)의
-partial_match 제거와 국가/지역 입력의 편향 의미를 반영한다. ROOFTOP만으로 주소 일치를 보장하지 않는다.
-지원하지 않는 표기를 실제 운영에서 자동화하려면 대표 주소로 별도 정책/회귀 테스트를 확장한다.
+partial_match 제거와 국가/지역 입력의 편향 의미를 반영한다. ROOFTOP과 제한된 충돌 검사는 식당 POI 동일성을
+보장하지 않는다. 실제 운영 검증은 대표 주소와 독립적인 지도 POI 비교를 함께 본다.
 
 ## 호출과 재시도 제한
 
@@ -59,8 +83,8 @@ partial_match 제거와 국가/지역 입력의 편향 의미를 반영한다. R
 
 | 결과 | 관리자 상태/안전한 코드 |
 |---|---|
-| 일치하는 완전 주소 | READY, failureCode null |
-| 결과 없음/복수/다른 국가/영역/정확도/주소 불일치 | REVIEW_REQUIRED, NO_RESULTS / AMBIGUOUS_RESULTS / COUNTRY_MISMATCH / OUTSIDE_SUPPORTED_AREA / INSUFFICIENT_PRECISION / ADDRESS_MISMATCH |
+| 유일한 도쿄 rooftop 후보이며 확실한 우편번호·본번 충돌 없음 | READY, failureCode null |
+| 결과 없음/복수/국가 누락·다른 국가/영역/정확도/확실한 번호 충돌 | REVIEW_REQUIRED, NO_RESULTS / AMBIGUOUS_RESULTS / COUNTRY_MISSING / COUNTRY_MISMATCH / OUTSIDE_SUPPORTED_AREA / INSUFFICIENT_PRECISION / ADDRESS_MISMATCH |
 | timeout/연결/5xx | RETRY_WAIT; TIMEOUT / CONNECTION_ERROR / TRANSIENT_ERROR |
 | Google 429 | RETRY_WAIT / QUOTA_EXCEEDED, 공유 대기; 마지막 시도도 공유 대기를 기록하고 FAILED / ATTEMPTS_EXHAUSTED |
 | 로컬 실행 슬롯 부족 | RETRY_WAIT / CAPACITY_EXCEEDED, Google quota와 구별 |
@@ -95,6 +119,7 @@ worker를 켰으나 지원 범위/보관 기간이 없거나 유효하지 않으
   새 결과가 검증되면 교체하고, 주소가 바뀌면 즉시 제거한다. 재시도나 실패만으로 만료 시각을 늘리지 않는다.
 - 자동 시도 기본값을 4회에서 최초 요청 포함 8회로 바꿨다. 일정은 위 표를 따르며 오류가 영구적이면 즉시 중단한다.
 - 마지막 취소 응답도 재시도 대기에 남기지 않고 실패로 끝낸다. 전송 중인 요청의 실행 예약은 lease까지 남겨 중복 호출을 막는다.
-- 정기 갱신 스케줄과 Grafana 알림은 #235에서 연결한다. 위치 V38 다음에 작업 V39를 적용한다. develop에 병합된 V32·V36·V36.1·V37과 다른 담당자의 PR은 수정하지 않는다.
+- 정기 갱신 스케줄과 Grafana 알림은 #235에서 연결한다. 위치 V38, 작업 V39, 선택 위치 확인 주소 V39.1,
+  Places 결합 V39.2, 위치 확인 기록 V39.3 순서로 적용한다. develop에 병합된 V32·V36·V36.1·V37과 다른 담당자의 PR은 수정하지 않는다.
 - 전역 호출 중단·일일 한도 소진·공유 대기·실행 슬롯 포화는 후보 조회 전에 읽기 전용으로 확인한다. 실제 예약 시에는 잠금 안에서 다시 검사한다.
   다만 이미 시도를 소진한 만료 작업과 설정 오류는 Google 호출 없이 실패로 정리한다. 호출 대기 작업이 많아도 소진 작업이 밀리지 않도록 별도로 조회한다.

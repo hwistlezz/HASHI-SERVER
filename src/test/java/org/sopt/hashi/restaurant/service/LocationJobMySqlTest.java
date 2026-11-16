@@ -17,8 +17,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
@@ -33,10 +35,15 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 import org.sopt.hashi.config.TimeConfig;
+import org.sopt.hashi.auth.ActorType;
+import org.sopt.hashi.auth.CurrentActor;
+import org.sopt.hashi.auth.CurrentActorProvider;
+import org.sopt.hashi.restaurant.RestaurantLocationPreviewCommand;
 import org.sopt.hashi.media.MediaPort;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.BusinessHourCommand;
 import org.sopt.hashi.restaurant.RestaurantPort;
+import org.sopt.hashi.restaurant.code.RestaurantErrorCode;
 import org.sopt.hashi.restaurant.domain.RestaurantLocationJobRepository;
 import org.sopt.hashi.restaurant.domain.RestaurantRepository;
 import org.sopt.hashi.restaurant.internal.map.GeocodingProvider;
@@ -45,6 +52,14 @@ import org.sopt.hashi.restaurant.internal.map.GeocodingResult.Failure;
 import org.sopt.hashi.restaurant.internal.map.GeocodingResult.FailureKind;
 import org.sopt.hashi.restaurant.internal.map.LocationJobProperties;
 import org.sopt.hashi.restaurant.internal.map.RestaurantLocationWorker;
+import org.sopt.hashi.restaurant.internal.map.PlacesSelectionProperties;
+import org.sopt.hashi.restaurant.internal.map.PlacesSelectionToken;
+import org.sopt.hashi.restaurant.internal.map.places.GooglePlacesProperties;
+import org.sopt.hashi.restaurant.internal.map.places.PlaceDetailsResult;
+import org.sopt.hashi.restaurant.internal.map.places.PlacesAttribution;
+import org.sopt.hashi.restaurant.internal.map.places.PlacesCandidate;
+import org.sopt.hashi.restaurant.internal.map.places.PlacesProvider;
+import org.sopt.hashi.restaurant.internal.map.places.PlacesSearchResult;
 import org.sopt.hashi.restaurant.service.LocationJobTransactions.Claim;
 import org.sopt.hashi.restaurant.service.LocationJobTransactions.Outcome;
 import org.sopt.hashi.restaurant.service.LocationJobTransactions.Target;
@@ -75,12 +90,16 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({RestaurantService.class, RestaurantPortImpl.class, RestaurantLocationService.class, LocationJobTransactions.class,
         LocationAdoptionPolicy.class, LocationRetryPolicy.class, RestaurantLocationWorker.class,
+        PlacesCandidatePolicy.class, PlacesLocationTransactions.class, PlacesLocationService.class,
+        PlacesSelectionToken.class,
         TimeConfig.class, LocationJobMySqlTest.Fixtures.class})
 @TestPropertySource(properties = {"spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true"})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class LocationJobMySqlTest {
     private static final AtomicInteger RESTAURANT_SEQUENCE = new AtomicInteger();
+    private static final DateTimeFormatter DATABASE_TIME =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
     @Container
     @ServiceConnection
     static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4")
@@ -96,21 +115,32 @@ class LocationJobMySqlTest {
     @MockitoSpyBean RestaurantLocationJobRepository jobs;
     @Autowired LocationJobTransactions transactions;
     @Autowired RestaurantLocationWorker worker;
+    @Autowired PlacesLocationService places;
     @MockitoSpyBean LocationJobProperties properties;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired FakeProvider provider;
+    @Autowired FakePlacesProvider placesProvider;
     @MockitoBean MediaPort mediaPort;
+    @MockitoBean CurrentActorProvider currentActorProvider;
     @MockitoBean FileStorage fileStorage;
+    @MockitoBean RestaurantMapService restaurantMapService;
 
     @BeforeEach
     void reset() {
+        doReturn(new CurrentActor(ActorType.ADMIN, 7L)).when(currentActorProvider).currentActor();
         jdbc.update("DELETE FROM restaurant_location_job");
         jdbc.update("""
                 UPDATE restaurant_geocoding_budget SET enabled=true, daily_limit=100, max_concurrent=4,
                 reserved_calls=0, budget_day=NULL, blocked_until=NULL WHERE id=1
                 """);
+        jdbc.update("""
+                UPDATE restaurant_places_budget SET enabled=true, daily_limit=100, minute_limit=10,
+                daily_used=0, minute_used=0, budget_day=NULL, minute_window_start=NULL, blocked_until=NULL
+                """);
         provider.answer.set(address -> new GeocodingResult.Candidates(List.of(LocationAdoptionPolicyTest.candidate())));
+        placesProvider.searchAnswer.set(query -> new PlacesSearchResult.NoResults());
+        placesProvider.detailsAnswer.set(placeId -> new PlaceDetailsResult.NoResults());
     }
 
     @Test
@@ -137,6 +167,94 @@ class LocationJobMySqlTest {
                 """, String.class, response.restaurantId())).isEqualTo(format(claim.obtainedAt()));
         assertThat(used()).isEqualTo(1);
         assertThat(transactions.complete(claim, Outcome.failure(FailureKind.ACCESS_DENIED))).isFalse();
+    }
+
+    @Test
+    void 명시_위치확인주소를_provider와_채택정책에_사용하고_표시주소는_보존한다() {
+        AtomicReference<String> providerInput = new AtomicReference<>();
+        provider.answer.set(address -> {
+            providerInput.set(address);
+            return new GeocodingResult.Candidates(List.of(LocationAdoptionPolicyTest.candidate()));
+        });
+        var response = restaurants.createByAdmin(createCommandWithGeocodingAddress());
+
+        worker.process(target(response.restaurantId()));
+
+        assertThat(providerInput).hasValue(LocationAdoptionPolicyTest.ADDRESS);
+        assertThat(response.address()).contains("架空ビル");
+        assertThat(response.geocodingAddress()).isEqualTo(LocationAdoptionPolicyTest.ADDRESS);
+        assertThat(locations.get(response.restaurantId()).locationStatus()).isEqualTo("READY");
+    }
+
+    @Test
+    void 위치확인주소만_바꿔도_이전_job결과를_막고_공백으로_지우면_표시주소로_fallback한다() {
+        var created = restaurants.createByAdmin(createCommandWithGeocodingAddress());
+        Long id = created.restaurantId();
+        Claim first = transactions.claim(target(id)).orElseThrow();
+
+        var changed = restaurants.updateByAdmin(id,
+                geocodingAddressCommand("  東京都試験区架空町1丁目2番4号  "));
+
+        assertThat(changed.addressRevision()).isEqualTo(2);
+        assertThat(changed.geocodingAddress()).isEqualTo("東京都試験区架空町1丁目2番4号");
+        assertThat(transactions.complete(first, ready())).isFalse();
+        Claim second = transactions.claim(target(id)).orElseThrow();
+        assertThat(second.geocodingAddress()).isEqualTo("東京都試験区架空町1丁目2番4号");
+
+        var cleared = restaurants.updateByAdmin(id, geocodingAddressCommand("\u00A0\u2007\u202F"));
+
+        assertThat(cleared.addressRevision()).isEqualTo(3);
+        assertThat(cleared.geocodingAddress()).isNull();
+        assertThat(transactions.complete(second, ready())).isFalse();
+        Claim fallback = transactions.claim(target(id)).orElseThrow();
+        assertThat(fallback.geocodingAddress()).isEqualTo(cleared.address());
+    }
+
+    @Test
+    void 같은_명시base라도_층수_변경은_새작업을_등록하고_옛결과를_차단한다() {
+        var created = restaurants.createByAdmin(createCommandWithGeocodingAddress());
+        Long id = created.restaurantId();
+        Claim inFlight = transactions.claim(target(id)).orElseThrow();
+        long jobCount = jobs.count();
+        String nextDisplayAddress = created.address().replace("1F", "2F");
+
+        var pending = restaurants.updateByAdmin(id,
+                addressAndGeocodingAddressCommand(nextDisplayAddress, LocationAdoptionPolicyTest.ADDRESS));
+
+        assertThat(pending.addressRevision()).isEqualTo(2);
+        assertThat(pending.address()).isEqualTo(nextDisplayAddress);
+        assertThat(pending.geocodingAddress()).isEqualTo(LocationAdoptionPolicyTest.ADDRESS);
+        assertThat(jobs.count()).isEqualTo(jobCount + 1);
+        assertThat(transactions.complete(inFlight, ready())).isFalse();
+        worker.process(target(id));
+        var locationBefore = readLocation(id);
+
+        var ready = restaurants.updateByAdmin(id,
+                addressAndGeocodingAddressCommand(nextDisplayAddress.replace("2F", "3F"),
+                        LocationAdoptionPolicyTest.ADDRESS));
+
+        assertThat(ready.addressRevision()).isEqualTo(3);
+        assertThat(ready.locationStatus()).isEqualTo("PENDING");
+        assertThat(jobs.count()).isEqualTo(jobCount + 2);
+        assertThat(readLocation(id).getCoordinates()).isNull();
+        assertThat(locationBefore.getCoordinates()).isNotNull();
+    }
+
+    @Test
+    void 명시base가_있던_legacy_표시주소수정은_base를_지우고_옛job을_막아_새입력으로_재확인한다() {
+        var created = restaurants.createByAdmin(createCommandWithGeocodingAddress());
+        Long id = created.restaurantId();
+        Claim old = transactions.claim(target(id)).orElseThrow();
+        String nextDisplayAddress = "東京都試験区別町4-5-6 架空ビル 2F";
+
+        var changed = restaurants.updateByAdmin(id, addressCommand(nextDisplayAddress));
+
+        assertThat(changed.addressRevision()).isEqualTo(2);
+        assertThat(changed.geocodingAddress()).isNull();
+        assertThat(transactions.complete(old, ready())).isFalse();
+        Claim current = transactions.claim(target(id)).orElseThrow();
+        assertThat(current.geocodingAddress()).isEqualTo(changed.address());
+        assertThat(current.addressRevision()).isEqualTo(2);
     }
 
     @Test
@@ -608,6 +726,520 @@ class LocationJobMySqlTest {
         assertThat(transactions.complete(claim, ready())).isFalse();
     }
 
+    @Test
+    void 관리자_위치검토_목록은_현재작업을_조인하고_ID_ASC_offset과_총건수를_반환한다() {
+        hideExistingRestaurantsFromAdminList();
+        Long first = createReviewRequired("OLD_RESULT");
+        locations.retry(first, 1);
+        Claim current = transactions.claim(target(first)).orElseThrow();
+        transactions.complete(current, new Outcome(null, null, "CURRENT_RESULT"));
+        Long second = createReviewRequired("SECOND_RESULT");
+        Long third = createReviewRequired("THIRD_RESULT");
+
+        var firstPage = restaurantPort.findLocationReviewsByAdmin(
+                "REVIEW_REQUIRED", null, 0, 2);
+        assertThat(firstPage.restaurants()).extracting("restaurantId").containsExactly(first, second);
+        assertThat(firstPage.restaurants().getFirst().failureCode()).isEqualTo("CURRENT_RESULT");
+        assertThat(firstPage.restaurants().getFirst().attempt()).isEqualTo(1);
+        assertThat(firstPage.page()).isZero();
+        assertThat(firstPage.size()).isEqualTo(2);
+        assertThat(firstPage.totalCount()).isEqualTo(3);
+        assertThat(firstPage.totalPages()).isEqualTo(2);
+
+        var secondPage = restaurantPort.findLocationReviewsByAdmin(
+                "REVIEW_REQUIRED", null, 1, 2);
+        assertThat(secondPage.restaurants()).extracting("restaurantId").containsExactly(third);
+        assertThat(secondPage.page()).isEqualTo(1);
+        assertThat(secondPage.totalCount()).isEqualTo(3);
+        assertThat(secondPage.totalPages()).isEqualTo(2);
+
+        var missingPage = restaurantPort.findLocationReviewsByAdmin(
+                "REVIEW_REQUIRED", null, 2, 2);
+        assertThat(missingPage.restaurants()).isEmpty();
+        assertThat(missingPage.page()).isEqualTo(2);
+        assertThat(missingPage.totalCount()).isEqualTo(3);
+        assertThat(missingPage.totalPages()).isEqualTo(2);
+
+        var hugePage = restaurantPort.findLocationReviewsByAdmin(
+                "REVIEW_REQUIRED", null, 1_000_000, 100);
+        assertThat(hugePage.restaurants()).isEmpty();
+        assertThat(hugePage.page()).isEqualTo(1_000_000);
+        assertThat(hugePage.totalCount()).isEqualTo(3);
+        assertThat(hugePage.totalPages()).isEqualTo(1);
+
+        assertThatThrownBy(() -> restaurantPort.findLocationReviewsByAdmin(
+                "REVIEW_REQUIRED", null, -1, 20)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> restaurantPort.findLocationReviewsByAdmin(
+                "REVIEW_REQUIRED", null, Integer.MAX_VALUE, 100)).isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void 관리자_위치검토_목록은_상태와_source를_필터하고_미해결과_삭제식당을_구분한다() {
+        hideExistingRestaurantsFromAdminList();
+        Long pending = restaurants.createByAdmin(createCommand()).restaurantId();
+
+        Long ready = restaurants.createByAdmin(createCommand()).restaurantId();
+        Claim readyClaim = transactions.claim(target(ready)).orElseThrow();
+        transactions.complete(readyClaim, ready());
+
+        Long retryWait = restaurants.createByAdmin(createCommand()).restaurantId();
+        transactions.complete(transactions.claim(target(retryWait)).orElseThrow(),
+                Outcome.failure(FailureKind.TRANSIENT_ERROR));
+
+        Long failed = restaurants.createByAdmin(createCommand()).restaurantId();
+        transactions.complete(transactions.claim(target(failed)).orElseThrow(),
+                Outcome.failure(FailureKind.INVALID_REQUEST));
+
+        Long unresolved = restaurants.createByAdmin(createCommand()).restaurantId();
+        jdbc.update("UPDATE restaurant SET location_id=NULL WHERE id=?", unresolved);
+
+        Long deleted = createReviewRequired("DELETED_RESULT");
+        restaurantPort.deleteByAdmin(deleted);
+
+        var pendingPage = restaurantPort.findLocationReviewsByAdmin("PENDING", null, 0, 20);
+        assertThat(pendingPage.restaurants())
+                .extracting("restaurantId").containsExactly(pending);
+        assertThat(pendingPage.totalCount()).isEqualTo(1);
+        var readyPage = restaurantPort.findLocationReviewsByAdmin(
+                "READY", "GOOGLE_GEOCODING", 0, 20);
+        assertThat(readyPage.restaurants())
+                .singleElement()
+                .satisfies(item -> {
+                    assertThat(item.restaurantId()).isEqualTo(ready);
+                    assertThat(item.source()).isEqualTo("GOOGLE_GEOCODING");
+                    assertThat(item.validUntil())
+                            .isEqualTo(readyClaim.obtainedAt().plusDays(1).toInstant(ZoneOffset.UTC));
+                    assertThat(item.canRetry()).isFalse();
+                });
+        assertThat(readyPage.totalCount()).isEqualTo(1);
+        var excludedSourcePage = restaurantPort.findLocationReviewsByAdmin("READY", "ADMIN", 0, 20);
+        assertThat(excludedSourcePage.restaurants()).isEmpty();
+        assertThat(excludedSourcePage.totalCount()).isZero();
+        assertThat(restaurantPort.findLocationReviewsByAdmin("RETRY_WAIT", null, 0, 20).restaurants())
+                .extracting("restaurantId").containsExactly(retryWait);
+        assertThat(restaurantPort.findLocationReviewsByAdmin("FAILED", null, 0, 20).restaurants())
+                .extracting("restaurantId").containsExactly(failed);
+        assertThat(restaurantPort.findLocationReviewsByAdmin("UNRESOLVED", null, 0, 20).restaurants())
+                .singleElement()
+                .satisfies(item -> {
+                    assertThat(item.restaurantId()).isEqualTo(unresolved);
+                    assertThat(item.addressRevision()).isZero();
+                    assertThat(item.attempt()).isZero();
+                    assertThat(item.canRetry()).isTrue();
+                });
+        assertThat(restaurantPort.findLocationReviewsByAdmin(
+                "REVIEW_REQUIRED", null, 0, 20).restaurants())
+                .isEmpty();
+    }
+
+    @Test
+    void 관리자_위치목록은_JVM_UTC와_JDBC_서울에서도_DATETIME을_UTC로_반환한다() {
+        hideExistingRestaurantsFromAdminList();
+        TimeZone originalTimezone = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+            assertThat(TimeZone.getDefault().getID()).isEqualTo("UTC");
+            assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())", Integer.class))
+                    .isEqualTo(9 * 60 * 60);
+
+            Long ready = restaurants.createByAdmin(createCommand()).restaurantId();
+            transactions.complete(transactions.claim(target(ready)).orElseThrow(), ready());
+            Long retryWait = restaurants.createByAdmin(createCommand()).restaurantId();
+            transactions.complete(transactions.claim(target(retryWait)).orElseThrow(),
+                    Outcome.failure(FailureKind.TRANSIENT_ERROR));
+
+            LocalDateTime validUntil = LocalDateTime.parse("2030-03-04T05:06:07.123456");
+            LocalDateTime nextAttemptAt = LocalDateTime.parse("2030-04-05T06:07:08.654321");
+            jdbc.update("""
+                    UPDATE restaurant_location l JOIN restaurant r ON r.location_id=l.id
+                    SET l.valid_until=? WHERE r.id=?
+                    """, validUntil.format(DATABASE_TIME), ready);
+            jdbc.update("""
+                    UPDATE restaurant_location l JOIN restaurant r ON r.location_id=l.id
+                    SET l.next_attempt_at=? WHERE r.id=?
+                    """, nextAttemptAt.format(DATABASE_TIME), retryWait);
+
+            assertThat(restaurantPort.findLocationReviewsByAdmin(
+                    "READY", null, 0, 20).restaurants())
+                    .singleElement()
+                    .satisfies(item -> assertThat(item.validUntil())
+                            .isEqualTo(validUntil.toInstant(ZoneOffset.UTC)));
+            assertThat(restaurantPort.findLocationReviewsByAdmin(
+                    "RETRY_WAIT", null, 0, 20).restaurants())
+                    .singleElement()
+                    .satisfies(item -> assertThat(item.nextAttemptAt())
+                            .isEqualTo(nextAttemptAt.toInstant(ZoneOffset.UTC)));
+        } finally {
+            TimeZone.setDefault(originalTimezone);
+        }
+    }
+
+    @Test
+    void Places_검색선택은_기존좌표를_지우고_DETAILS성공만_30일좌표로_저장한다() {
+        hideExistingRestaurantsFromAdminList();
+        Long id = restaurants.createByAdmin(createCommandWithGeocodingAddress()).restaurantId();
+        provider.answer.set(address -> new GeocodingResult.NoResults());
+        worker.process(target(id));
+        assertThat(locations.get(id).locationStatus()).isEqualTo("REVIEW_REQUIRED");
+
+        AtomicReference<String> query = new AtomicReference<>();
+        PlacesCandidate candidate = placesCandidate("place-123");
+        placesProvider.searchAnswer.set(value -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            query.set(value);
+            return new PlacesSearchResult.Candidates(List.of(candidate));
+        });
+        var search = restaurantPort.searchLocationPlacesByAdmin(id, 1);
+
+        assertThat(query.get()).contains("試験", LocationAdoptionPolicyTest.ADDRESS);
+        assertThat(search.candidates()).singleElement().satisfies(value -> {
+            assertThat(value.selectionToken()).isNotBlank();
+            assertThat(value.selectionExpiresAt()).isAfter(Instant.now());
+        });
+        assertThat(placesUsed("SEARCH")).isEqualTo(1);
+        assertThat(placesUsed("DETAILS")).isZero();
+
+        var pending = restaurantPort.selectLocationPlaceByAdmin(id, 1, search.candidates().getFirst().selectionToken());
+        assertThat(pending.locationStatus()).isEqualTo("PENDING");
+        assertThat(pending.source()).isNull();
+        assertThat(pending.verificationMode()).isEqualTo("PLACE_DETAILS");
+        assertThat(pending.confirmedByAdminId()).isEqualTo(7L);
+        assertThat(pending.confirmationMethod()).isEqualTo("ADMIN_PLACE_SELECTION");
+        assertThat(jdbc.queryForObject("""
+                SELECT l.latitude IS NULL FROM restaurant r JOIN restaurant_location l ON l.id=r.location_id
+                WHERE r.id=?
+                """, Boolean.class, id)).isTrue();
+
+        placesProvider.detailsAnswer.set(placeId -> new PlaceDetailsResult.Place(candidate));
+        worker.process(target(id));
+
+        var ready = locations.get(id);
+        assertThat(ready.locationStatus()).isEqualTo("READY");
+        assertThat(ready.source()).isEqualTo("GOOGLE_PLACES");
+        assertThat(ready.verificationMode()).isEqualTo("PLACE_DETAILS");
+        assertThat(placesUsed("DETAILS")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT l.google_place_id FROM restaurant r JOIN restaurant_location l ON l.id=r.location_id
+                WHERE r.id=?
+                """, String.class, id)).isEqualTo("place-123");
+        assertThat(jdbc.queryForObject("""
+                SELECT TIMESTAMPDIFF(DAY, l.obtained_at, l.valid_until) FROM restaurant r
+                JOIN restaurant_location l ON l.id=r.location_id WHERE r.id=?
+                """, Integer.class, id)).isEqualTo(30);
+        assertThat(restaurantPort.findLocationReviewsByAdmin("READY", "GOOGLE_PLACES", 0, 20).restaurants())
+                .extracting("restaurantId").contains(id);
+    }
+
+    @Test
+    void 확인기록은_방법누락과_관리자누락과_다른revision을_DB에서도_거부한다() {
+        Long id = restaurants.createByAdmin(createCommand()).restaurantId();
+        Long locationId = jdbc.queryForObject("SELECT location_id FROM restaurant WHERE id=?", Long.class, id);
+        for (String assignment : List.of(
+                "confirmation_method=NULL, confirmed_by_admin_id=7, confirmed_at=UTC_TIMESTAMP(6), confirmed_revision=1",
+                "confirmation_method='ADMIN_PLACE_SELECTION ', confirmed_by_admin_id=7, confirmed_at=UTC_TIMESTAMP(6), confirmed_revision=1",
+                "confirmation_method='ADMIN_PLACE_SELECTION', confirmed_by_admin_id=NULL, confirmed_at=UTC_TIMESTAMP(6), confirmed_revision=1",
+                "confirmation_method='ADMIN_PLACE_SELECTION', confirmed_by_admin_id=7, confirmed_at=UTC_TIMESTAMP(6), confirmed_revision=2",
+                "confirmation_method='AUTOMATIC', confirmed_by_admin_id=7, confirmed_at=UTC_TIMESTAMP(6), confirmed_revision=1")) {
+            assertThatThrownBy(() -> jdbc.update("UPDATE restaurant_location SET " + assignment + " WHERE id=?", locationId))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class)
+                    .hasMessageContaining("chk_location_confirmation")
+                    .hasRootCauseInstanceOf(java.sql.SQLException.class);
+        }
+        assertThat(locations.get(id).confirmationMethod()).isNull();
+    }
+
+    @Test
+    void 등록전_미리보기는_저장없이_HTTP를_호출하고_등록은_DETAILS작업과_관리자확인을_함께_저장한다() {
+        var command = createCommandWithGeocodingAddress();
+        var input = RestaurantLocationPreviewCommand.from(command);
+        PlacesCandidate candidate = placesCandidate("preview-place");
+        long before = restaurantRepository.count();
+        placesProvider.searchAnswer.set(query -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(query).contains(command.localName(), command.geocodingAddress());
+            return new PlacesSearchResult.Candidates(List.of(candidate));
+        });
+        var preview = restaurantPort.previewLocationByAdmin(input);
+        assertThat(restaurantRepository.count()).isEqualTo(before);
+        assertThat(jobs.count()).isZero();
+        assertThat(placesUsed("SEARCH")).isEqualTo(1);
+
+        var created = restaurantPort.createByAdmin(command, preview.getFirst().selectionToken());
+        var pending = locations.get(created.restaurantId());
+        assertThat(pending.locationStatus()).isEqualTo("PENDING");
+        assertThat(pending.source()).isNull();
+        assertThat(pending.verificationMode()).isEqualTo("PLACE_DETAILS");
+        assertThat(pending.confirmationMethod()).isEqualTo("ADMIN_PLACE_SELECTION");
+        assertThat(pending.confirmedByAdminId()).isEqualTo(7L);
+        assertThat(pending.confirmedRevision()).isEqualTo(1);
+        assertThat(pending.confirmedAt()).isNotNull();
+        assertThat(jobs.count()).isEqualTo(1);
+        assertThat(used()).isZero();
+        placesProvider.detailsAnswer.set(placeId -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(placeId).isEqualTo("preview-place");
+            return new PlaceDetailsResult.Place(candidate);
+        });
+        worker.process(target(created.restaurantId()));
+        var ready = locations.get(created.restaurantId());
+        assertThat(ready.locationStatus()).isEqualTo("READY");
+        assertThat(ready.source()).isEqualTo("GOOGLE_PLACES");
+        assertThat(ready.confirmedAt()).isEqualTo(pending.confirmedAt());
+        assertThat(placesUsed("DETAILS")).isEqualTo(1);
+        assertThat(used()).isZero();
+    }
+
+    @Test
+    void 다른관리자나_수정한입력의_토큰으로는_식당과_작업이_만들어지지않는다() {
+        var command = createCommandWithGeocodingAddress();
+        var input = RestaurantLocationPreviewCommand.from(command);
+        placesProvider.searchAnswer.set(query -> new PlacesSearchResult.Candidates(List.of(placesCandidate("preview"))));
+        String token = restaurantPort.previewLocationByAdmin(input).getFirst().selectionToken();
+        long before = restaurantRepository.count();
+        doReturn(new CurrentActor(ActorType.ADMIN, 8L)).when(currentActorProvider).currentActor();
+        assertThatThrownBy(() -> restaurantPort.createByAdmin(command, token))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.getErrorCode()).isEqualTo(RestaurantErrorCode.PLACE_SELECTION_CONFLICT));
+        doReturn(new CurrentActor(ActorType.ADMIN, 7L)).when(currentActorProvider).currentActor();
+        for (var changed : List.of(
+                new RestaurantLocationPreviewCommand(input.name() + "지점", input.localName(), input.address(), input.geocodingAddress()),
+                new RestaurantLocationPreviewCommand(input.name(), input.localName() + "店", input.address(), input.geocodingAddress()),
+                new RestaurantLocationPreviewCommand(input.name(), input.localName(), input.address() + "2F", input.geocodingAddress()),
+                new RestaurantLocationPreviewCommand(input.name(), input.localName(), input.address(), null))) {
+            assertThatThrownBy(() -> places.verifyForCreate(changed, token))
+                    .isInstanceOfSatisfying(BusinessException.class, error ->
+                            assertThat(error.getErrorCode()).isEqualTo(RestaurantErrorCode.PLACE_SELECTION_CONFLICT));
+        }
+        assertThatThrownBy(() -> restaurantPort.createByAdmin(command, "arbitrary-place-id"))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.getErrorCode()).isEqualTo(RestaurantErrorCode.PLACE_SELECTION_INVALID));
+        assertThat(restaurantRepository.count()).isEqualTo(before);
+        assertThat(jobs.count()).isZero();
+    }
+
+    @Test
+    void 미리보기토큰없이_등록할수있고_후보선택_작업저장실패는_식당생성도_롤백한다() {
+        var ordinary = restaurants.createByAdmin(createCommand());
+        assertThat(locations.get(ordinary.restaurantId()).verificationMode()).isEqualTo("GEOCODING");
+        var command = createCommandWithGeocodingAddress();
+        placesProvider.searchAnswer.set(query -> new PlacesSearchResult.Candidates(List.of(placesCandidate("preview"))));
+        String token = restaurantPort.previewLocationByAdmin(RestaurantLocationPreviewCommand.from(command))
+                .getFirst().selectionToken();
+        long before = restaurantRepository.count();
+        long jobsBefore = jobs.count();
+        doAnswer(invocation -> { throw new IllegalStateException("synthetic job save failure"); })
+                .when(jobs).save(org.mockito.ArgumentMatchers.any());
+        assertThatThrownBy(() -> restaurantPort.createByAdmin(command, token)).isInstanceOf(IllegalStateException.class);
+        assertThat(restaurantRepository.count()).isEqualTo(before);
+        assertThat(jobs.count()).isEqualTo(jobsBefore);
+    }
+
+    @Test
+    void 최대길이_현지명과_기본주소도_Port를_거쳐_잘림없이_검색한다() {
+        Long id = placesReviewRequiredRestaurant();
+        String localName = "가".repeat(100);
+        String address = "東".repeat(255);
+        jdbc.update("UPDATE restaurant SET local_name=?, geocoding_address=? WHERE id=?", localName, address, id);
+        AtomicReference<String> sent = new AtomicReference<>();
+        placesProvider.searchAnswer.set(value -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            sent.set(value);
+            return new PlacesSearchResult.NoResults();
+        });
+
+        assertThat(restaurantPort.searchLocationPlacesByAdmin(id, 1).candidates()).isEmpty();
+        assertThat(sent.get()).isEqualTo(localName + " " + address);
+        assertThat(placesUsed("SEARCH")).isEqualTo(1);
+    }
+
+    @Test
+    void PENDING은_후보검색을_provider호출과_SEARCH예산사용전에_거부한다() {
+        Long id = restaurants.createByAdmin(createCommandWithGeocodingAddress()).restaurantId();
+        AtomicInteger calls = new AtomicInteger();
+        placesProvider.searchAnswer.set(query -> {
+            calls.incrementAndGet();
+            return new PlacesSearchResult.NoResults();
+        });
+
+        assertThatThrownBy(() -> places.search(id, 1))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(RestaurantErrorCode.PLACE_SELECTION_CONFLICT));
+        assertThat(calls).hasValue(0);
+        assertThat(placesUsed("SEARCH")).isZero();
+    }
+
+    @Test
+    void 제3자_attribution후보는_token을_발급하고_DETAILS성공시_좌표와_함께_저장한다() {
+        Long id = placesReviewRequiredRestaurant();
+        PlacesCandidate base = placesCandidate("place-attribution");
+        PlacesCandidate attributed = new PlacesCandidate(base.placeId(), base.displayName(), base.address(),
+                base.latitude(), base.longitude(), base.countryCode(), base.administrativeArea(), base.types(),
+                base.businessStatus(), List.of(new PlacesAttribution("Third party", "https://example.com")),
+                base.googleMapsUri());
+        placesProvider.searchAnswer.set(query -> new PlacesSearchResult.Candidates(List.of(attributed)));
+
+        var search = places.search(id, 1);
+        assertThat(search.candidates()).singleElement()
+                .satisfies(value -> assertThat(value.attributions()).singleElement());
+        places.select(id, 1, search.candidates().getFirst().selectionToken());
+        placesProvider.detailsAnswer.set(placeId -> new PlaceDetailsResult.Place(attributed));
+        worker.process(target(id));
+
+        assertThat(locations.get(id).locationStatus()).isEqualTo("READY");
+        assertThat(jdbc.queryForObject("""
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(l.places_attributions, '$[0].displayName'))
+                FROM restaurant r JOIN restaurant_location l ON l.id=r.location_id WHERE r.id=?
+                """, String.class, id)).isEqualTo("Third party");
+        assertThat(placesUsed("SEARCH")).isEqualTo(1);
+    }
+
+    @Test
+    void Places_DETAILS_실패의_수동재시도는_같은_PlaceID와_operation을_복제한다() {
+        Long id = placesReviewRequiredRestaurant();
+        String token = searchCandidate(id, placesCandidate("place-retry")).selectionToken();
+        places.select(id, 1, token);
+        placesProvider.detailsAnswer.set(placeId -> new PlaceDetailsResult.Failure(FailureKind.TRANSIENT_ERROR, 503));
+        worker.process(target(id));
+        assertThat(locations.get(id).locationStatus()).isEqualTo("RETRY_WAIT");
+
+        restaurantPort.retryLocationByAdmin(id, 1);
+
+        var job = jobs.findAll().stream().filter(value -> value.getRestaurantId().equals(id))
+                .max(java.util.Comparator.comparing(org.sopt.hashi.restaurant.domain.RestaurantLocationJob::getId))
+                .orElseThrow();
+        assertThat(job.getOperation()).isEqualTo(
+                org.sopt.hashi.restaurant.domain.RestaurantLocationJob.Operation.PLACE_DETAILS);
+        assertThat(job.getGooglePlaceId()).isEqualTo("place-retry");
+        assertThat(locations.get(id).verificationMode()).isEqualTo("PLACE_DETAILS");
+    }
+
+    @Test
+    void READY에서_다른_Places후보를_선택하면_revision은_유지하고_기존좌표와_attribution을_즉시지운다() {
+        Long id = placesReviewRequiredRestaurant();
+        PlacesCandidate first = placesCandidate("place-first");
+        places.select(id, 1, searchCandidate(id, first).selectionToken());
+        placesProvider.detailsAnswer.set(placeId -> new PlaceDetailsResult.Place(first));
+        worker.process(target(id));
+        assertThat(locations.get(id).locationStatus()).isEqualTo("READY");
+
+        PlacesCandidate replacement = placesCandidate("place-replacement");
+        places.select(id, 1, searchCandidate(id, replacement).selectionToken());
+
+        assertThat(locations.get(id).addressRevision()).isEqualTo(1);
+        assertThat(locations.get(id).locationStatus()).isEqualTo("PENDING");
+        assertThat(jdbc.queryForMap("""
+                SELECT l.latitude, l.longitude, l.source, l.google_place_id, l.places_attributions
+                FROM restaurant r JOIN restaurant_location l ON l.id=r.location_id WHERE r.id=?
+                """, id).values()).allMatch(java.util.Objects::isNull);
+    }
+
+    @Test
+    void 변조된_후보token은_상태와_DETAILS예산을_바꾸지않는다() {
+        Long id = placesReviewRequiredRestaurant();
+        String token = searchCandidate(id, placesCandidate("place-tamper")).selectionToken();
+        String tampered = token.substring(0, token.length() - 1)
+                + (token.endsWith("A") ? "B" : "A");
+
+        assertThatThrownBy(() -> places.select(id, 1, tampered))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(RestaurantErrorCode.PLACE_SELECTION_INVALID));
+        assertThat(locations.get(id).locationStatus()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(placesUsed("DETAILS")).isZero();
+    }
+
+    @Test
+    void 동일한_이름수정은_선택확인을_유지하고_실제이름변경은_새_Geocoding작업으로_전환한다() {
+        Long id = placesReviewRequiredRestaurant();
+        PlacesCandidate candidate = placesCandidate("selected-name");
+        places.select(id, 1, searchCandidate(id, candidate).selectionToken());
+        placesProvider.detailsAnswer.set(placeId -> new PlaceDetailsResult.Place(candidate));
+        worker.process(target(id));
+        String name = restaurantRepository.findById(id).orElseThrow().getName();
+        long previousJobs = jobs.count();
+        restaurants.updateByAdmin(id, new AdminRestaurantCommand(name, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null));
+        assertThat(locations.get(id).locationStatus()).isEqualTo("READY");
+        assertThat(locations.get(id).confirmedByAdminId()).isEqualTo(7L);
+        assertThat(jobs.count()).isEqualTo(previousJobs);
+
+        restaurants.updateByAdmin(id, new AdminRestaurantCommand(name + "다른 지점", null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null));
+        var pending = locations.get(id);
+        assertThat(pending.addressRevision()).isEqualTo(2);
+        assertThat(pending.locationStatus()).isEqualTo("PENDING");
+        assertThat(pending.verificationMode()).isEqualTo("GEOCODING");
+        assertThat(pending.source()).isNull();
+        assertThat(pending.confirmedByAdminId()).isNull();
+        assertThat(pending.confirmationMethod()).isNull();
+        assertThat(jobs.count()).isEqualTo(previousJobs + 1);
+    }
+
+    @Test
+    void 오래된_DETAILS결과는_주소변경뒤_좌표를_덮어쓰지못한다() {
+        Long id = placesReviewRequiredRestaurant();
+        PlacesCandidate candidate = placesCandidate("place-stale");
+        places.select(id, 1, searchCandidate(id, candidate).selectionToken());
+        Claim stale = transactions.claim(target(id)).orElseThrow();
+
+        restaurants.updateByAdmin(id, addressCommand("東京都試験区架空町9-9-9"));
+
+        assertThat(transactions.completePlaces(stale,
+                new LocationJobTransactions.PlacesOutcome(
+                        new PlacesCandidatePolicy(LocationAdoptionPolicyTest.properties()).coordinates(candidate),
+                        candidate.placeId(), List.of(), null, null))).isFalse();
+        assertThat(locations.get(id).source()).isNull();
+        assertThat(locations.get(id).verificationMode()).isEqualTo("GEOCODING");
+    }
+
+    @Test
+    void SEARCH예산이_닫혀도_이미선택한_DETAILS예산과_worker는_독립적으로_동작한다() {
+        Long id = placesReviewRequiredRestaurant();
+        PlacesCandidate candidate = placesCandidate("place-budget");
+        places.select(id, 1, searchCandidate(id, candidate).selectionToken());
+        jdbc.update("UPDATE restaurant_places_budget SET enabled=false WHERE operation='SEARCH'");
+        placesProvider.detailsAnswer.set(placeId -> new PlaceDetailsResult.Place(candidate));
+        int geocodingUsed = used();
+
+        worker.runOnce();
+
+        assertThat(locations.get(id).locationStatus()).isEqualTo("READY");
+        assertThat(placesUsed("DETAILS")).isEqualTo(1);
+        assertThat(used()).isEqualTo(geocodingUsed);
+    }
+
+    private Long createReviewRequired(String failureCode) {
+        Long id = restaurants.createByAdmin(createCommand()).restaurantId();
+        Claim claim = transactions.claim(target(id)).orElseThrow();
+        transactions.complete(claim, new Outcome(null, null, failureCode));
+        return id;
+    }
+
+    private void hideExistingRestaurantsFromAdminList() {
+        // 이 클래스는 test transaction을 쓰지 않는다. offset 목록은 이전 테스트가 남긴 활성 식당도 포함하므로
+        // 현재 목록 fixture의 page/count 기대값을 독립시키되 production과 같은 soft-delete 조건을 사용한다.
+        jdbc.update("UPDATE restaurant SET deleted=true WHERE deleted=false");
+    }
+
+    private Long placesReviewRequiredRestaurant() {
+        Long id = restaurants.createByAdmin(createCommandWithGeocodingAddress()).restaurantId();
+        provider.answer.set(address -> new GeocodingResult.NoResults());
+        worker.process(target(id));
+        return id;
+    }
+
+    private org.sopt.hashi.restaurant.RestaurantPlacesCandidateInfo searchCandidate(
+            Long restaurantId, PlacesCandidate candidate) {
+        placesProvider.searchAnswer.set(query -> new PlacesSearchResult.Candidates(List.of(candidate)));
+        return places.search(restaurantId, 1).candidates().getFirst();
+    }
+
+    private PlacesCandidate placesCandidate(String placeId) {
+        return new PlacesCandidate(placeId, "試験 식당", LocationAdoptionPolicyTest.ADDRESS,
+                new BigDecimal("10.500000"), new BigDecimal("20.500000"), "JP", "Tokyo",
+                List.of("restaurant", "food"), "OPERATIONAL", List.of(),
+                "https://maps.google.com/?cid=123");
+    }
+
     private String saveLocationJob(AdminOperation operation, Long id) {
         return switch (operation) {
             case CREATE -> restaurantPort.createByAdmin(createCommand()).locationStatus();
@@ -631,6 +1263,11 @@ class LocationJobMySqlTest {
 
     private int used() {
         return jdbc.queryForObject("SELECT reserved_calls FROM restaurant_geocoding_budget WHERE id=1", Integer.class);
+    }
+
+    private int placesUsed(String operation) {
+        return jdbc.queryForObject("SELECT daily_used FROM restaurant_places_budget WHERE operation=?",
+                Integer.class, operation);
     }
 
     private LocalDateTime rawTime(String column, Long jobId) {
@@ -677,6 +1314,28 @@ class LocationJobMySqlTest {
                 Arrays.stream(DayOfWeek.values()).map(day -> new BusinessHourCommand(day, null, null, null, null, true)).toList());
     }
 
+    private AdminRestaurantCommand createCommandWithGeocodingAddress() {
+        int sequence = RESTAURANT_SEQUENCE.incrementAndGet();
+        String displayAddress = LocationAdoptionPolicyTest.ADDRESS.replace(
+                "試験区", " ".repeat(sequence) + "試験区") + " 架空ビル" + sequence + " 1F";
+        return new AdminRestaurantCommand("합성 식당 " + sequence, "試験", "요약", "설명",
+                displayAddress, LocationAdoptionPolicyTest.ADDRESS, "표시 지역", "sushi", "초밥",
+                "restaurant", "JPY", BigDecimal.ONE, BigDecimal.TEN,
+                List.of("restaurants/synthetic.jpg"), null, null, null, List.of("합성"), List.of(),
+                Arrays.stream(DayOfWeek.values())
+                        .map(day -> new BusinessHourCommand(day, null, null, null, null, true)).toList());
+    }
+
+    private AdminRestaurantCommand geocodingAddressCommand(String geocodingAddress) {
+        return new AdminRestaurantCommand(null, null, null, null, null, geocodingAddress,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+    }
+
+    private AdminRestaurantCommand addressAndGeocodingAddressCommand(String address, String geocodingAddress) {
+        return new AdminRestaurantCommand(null, null, null, null, address, geocodingAddress,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+    }
+
     private AdminRestaurantCommand addressCommand(String address) {
         String uniqueAddress = address.replace("試験区", " ".repeat(RESTAURANT_SEQUENCE.incrementAndGet()) + "試験区");
         return new AdminRestaurantCommand(null, null, null, null, uniqueAddress, null, null, null, null, null,
@@ -694,9 +1353,32 @@ class LocationJobMySqlTest {
         }
     }
 
+    static class FakePlacesProvider implements PlacesProvider {
+        final AtomicReference<Function<String, PlacesSearchResult>> searchAnswer = new AtomicReference<>();
+        final AtomicReference<Function<String, PlaceDetailsResult>> detailsAnswer = new AtomicReference<>();
+
+        @Override
+        public PlacesSearchResult search(String query) {
+            return searchAnswer.get().apply(query);
+        }
+
+        @Override
+        public PlaceDetailsResult details(String placeId) {
+            return detailsAnswer.get().apply(placeId);
+        }
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class Fixtures {
         @Bean LocationJobProperties jobProperties() { return LocationAdoptionPolicyTest.properties(); }
         @Bean FakeProvider fakeProvider() { return new FakeProvider(); }
+        @Bean FakePlacesProvider fakePlacesProvider() { return new FakePlacesProvider(); }
+        @Bean GooglePlacesProperties googlePlacesProperties() {
+            return new GooglePlacesProperties(true, "test-key", Duration.ofSeconds(1), Duration.ofSeconds(2), 65536);
+        }
+        @Bean PlacesSelectionProperties placesSelectionProperties() {
+            String key = java.util.Base64.getEncoder().encodeToString(new byte[32]);
+            return new PlacesSelectionProperties(true, key, Duration.ofMinutes(10));
+        }
     }
 }

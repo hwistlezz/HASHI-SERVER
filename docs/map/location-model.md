@@ -25,7 +25,8 @@ Google 보관 정책 승인은 별도로 확인해야 한다.
 - 기존 `area`는 표시 문자열, `placeType`은 음식점·카페·주점 분류다. 관광 지역 코드와 자동 변환하지
   않는다. Google address components도 지역을 자동 확정하지 않는다.
 - PR #225는 기존 Controller·Service·Port·요청/응답 DTO와 평점 통계 갱신 경로를 유지했다.
-  현재 미삭제 식당의 주소가 실제로 달라질 때만 이미 있는 위치를 무효화한다. 일반 정보 수정은 위치에 영향을 주지 않는다.
+  #233의 최신 등록·수정 계약에서는 이름·현지명·표시 주소 또는 실제 provider 입력이 바뀌면 기존 위치를 무효화한다.
+  같은 기본 주소를 명시한 층수 수정도 재확인하며, 같은 입력이나 가격·소개 수정은 위치에 영향을 주지 않는다.
 
 ## 값과 DB 제약
 
@@ -80,8 +81,9 @@ status는 현재 작업 상태다. 저장된 좌표의 사용 가능 여부는 �
 갱신 시작·재시도·실패만으로 출처·취득/만료 시각을 바꾸지 않는다. 새 결과의 검증이 모두 끝나야
 좌표와 출처·수명을 함께 교체한다. 실패한 갱신 때문에 기존 validUntil을 연장하지 않는다.
 
-첫 위치 요청의 addressRevision은 1이다. 위치가 있는 미삭제 식당의 주소 변경은 같은 transaction에서
+첫 위치 요청의 addressRevision은 1이다. 미삭제 식당의 이름·현지명·표시 주소·실제 provider 입력 변경은 같은 transaction에서
 revision을 증가시키고 새 requestId/PENDING으로 바꾸며 이전 좌표와 수명 정보를 제거한다.
+기본 주소가 같아도 표시 주소·건물·층이 달라지면 재확인한다. 같은 입력의 PATCH만 revision과 작업을 보존한다.
 삭제된 식당의 주소 편집은 위치와 job을 변경하지 않는다.
 관광 지역 ID는 그대로 둔다. 같은 주소의 PENDING 재요청은 기존 requestId를 유지한다.
 실패·확인 필요·재시도 대기에서 명시적 재요청하거나 READY를 갱신하면 새 requestId를 발급한다.
@@ -92,8 +94,9 @@ revision을 증가시키고 새 requestId/PENDING으로 바꾸며 이전 좌표�
 Location의 낙관적 버전도 오래된 영속 객체의 덮어쓰기를 막는다.
 이 모델의 검사와 별도로 PR #233의 worker는 완료 시 job과 유효한 lease도 재검사한다.
 
-현재 모델의 출처는 GOOGLE_GEOCODING / ADMIN이며 둘 다 명시적 수명을 가진다. `@Enumerated(STRING)`으로
+현재 모델의 출처는 GOOGLE_GEOCODING / GOOGLE_PLACES / ADMIN이며 모두 명시적 수명을 가진다. `@Enumerated(STRING)`으로
 DB에도 같은 이름을 저장한다. 운영자가 Google 결과를 확인했다는 이유로 ADMIN으로 바꾸지 않는다.
+GOOGLE_PLACES는 좌표와 Place ID를 함께 저장하며 후보 선택 계약은 [Places 후보 선택](place-selection.md)을 따른다.
 출처를 포함한 새 결과는 새로운 요청으로만 저장한다.
 독립적으로 확보한 자체 좌표에 Google 보관 조건을 그대로 적용하지 않는 것이 후속 정책이다.
 ADMIN의 수명을 선택 사항으로 바꾸는 코드·DB·응답 변경은 이번 PR에 포함하지 않는다.
@@ -119,7 +122,7 @@ soft delete는 위치 행을 물리 삭제하지 않는다. 예약·리뷰의 �
 
 ## PR #233 통합 구현과 남은 경계
 
-1. 관리자 등록·미삭제 식당의 주소 변경 Service에서 식당 저장·위치 요청·durable job을 같은 transaction에 묶었다.
+1. 관리자 등록·미삭제 식당의 실제 provider 입력 변경 Service에서 식당 저장·위치 요청·durable job을 같은 transaction에 묶었다.
    관리자 신규 등록은 요청을 자동 생성하며 관리자 상세·위치 조회/재처리 응답에 상태 DTO를 추가했다.
 2. 기존 `RestaurantRepository.findByIdForUpdate`로 부모를 먼저 잠근 뒤 위치를 변경한다.
    완료/재시도/삭제/주소 변경이 이 순서를 공유해야 한다. detached Restaurant를 받아 저장하지 않는다.

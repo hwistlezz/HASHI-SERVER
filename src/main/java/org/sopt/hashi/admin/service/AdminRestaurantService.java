@@ -2,15 +2,23 @@ package org.sopt.hashi.admin.service;
 
 import java.util.List;
 import org.sopt.hashi.admin.dto.AdminRestaurantResponse;
+import org.sopt.hashi.admin.dto.PreviewRestaurantLocationRequest;
+import org.sopt.hashi.admin.dto.RestaurantLocationPreviewResponse;
 import org.sopt.hashi.admin.dto.CreateRestaurantRequest;
 import org.sopt.hashi.admin.dto.UpdateRestaurantRequest;
 import org.sopt.hashi.admin.dto.RestaurantLocationResponse;
+import org.sopt.hashi.admin.dto.RestaurantLocationReviewListResponse;
 import org.sopt.hashi.admin.dto.RetryRestaurantLocationRequest;
+import org.sopt.hashi.admin.dto.RestaurantPlacesSearchResponse;
+import org.sopt.hashi.admin.dto.SearchRestaurantPlacesRequest;
+import org.sopt.hashi.admin.dto.SelectRestaurantPlaceRequest;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.BusinessHourCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.ImageCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.MenuCommand;
 import org.sopt.hashi.restaurant.RestaurantPort;
+import org.sopt.hashi.shared.error.BusinessException;
+import org.sopt.hashi.shared.error.CommonErrorCode;
 import org.springframework.stereotype.Service;
 
 /**
@@ -27,7 +35,14 @@ public class AdminRestaurantService {
     }
 
     public AdminRestaurantResponse create(CreateRestaurantRequest request) {
-        return AdminRestaurantResponse.from(restaurantPort.createByAdmin(toCommand(request)));
+        AdminRestaurantCommand command = toCommand(request);
+        return AdminRestaurantResponse.from(request.locationSelectionToken() == null
+                ? restaurantPort.createByAdmin(command)
+                : restaurantPort.createByAdmin(command, request.locationSelectionToken()));
+    }
+
+    public RestaurantLocationPreviewResponse previewLocation(PreviewRestaurantLocationRequest request) {
+        return RestaurantLocationPreviewResponse.from(restaurantPort.previewLocationByAdmin(request.toCommand()));
     }
 
     public AdminRestaurantResponse update(Long restaurantId, UpdateRestaurantRequest request) {
@@ -47,6 +62,27 @@ public class AdminRestaurantService {
                 restaurantPort.retryLocationByAdmin(restaurantId, request.expectedAddressRevision()));
     }
 
+    public RestaurantLocationReviewListResponse findLocationReviews(
+            String status, String source, int page, int size) {
+        if ((long) page * size > Integer.MAX_VALUE) {
+            throw new BusinessException(CommonErrorCode.INVALID_INPUT);
+        }
+        return RestaurantLocationReviewListResponse.from(
+                restaurantPort.findLocationReviewsByAdmin(status, source, page, size));
+    }
+
+    public RestaurantPlacesSearchResponse searchLocationPlaces(
+            Long restaurantId, SearchRestaurantPlacesRequest request) {
+        return RestaurantPlacesSearchResponse.from(restaurantPort.searchLocationPlacesByAdmin(
+                restaurantId, request.expectedAddressRevision()));
+    }
+
+    public RestaurantLocationResponse selectLocationPlace(
+            Long restaurantId, SelectRestaurantPlaceRequest request) {
+        return RestaurantLocationResponse.from(restaurantPort.selectLocationPlaceByAdmin(
+                restaurantId, request.expectedAddressRevision(), request.selectionToken()));
+    }
+
     private AdminRestaurantCommand toCommand(CreateRestaurantRequest request) {
         return new AdminRestaurantCommand(
                 request.name(),
@@ -54,6 +90,7 @@ public class AdminRestaurantService {
                 request.summary(),
                 request.description(),
                 request.address(),
+                request.geocodingAddress(),
                 request.area(),
                 request.genre(),
                 request.foodCategory(),
@@ -77,6 +114,7 @@ public class AdminRestaurantService {
                 request.summary(),
                 request.description(),
                 request.address(),
+                request.geocodingAddress(),
                 request.area(),
                 request.genre(),
                 request.foodCategory(),

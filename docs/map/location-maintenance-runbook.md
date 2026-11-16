@@ -5,6 +5,9 @@
 이 도구는 기존 식당을 기존 [위치 worker](location-jobs.md)에 연결한다. 주소와 관광 지역을
 추측하지 않는다. 식당 이름·주소·관광 지역·메뉴·이미지·태그를 변경하지 않는다.
 Google 호출과 자동 재시도는 #224 worker, HTTP는 #222 adapter 한 곳에서 처리한다.
+BACKFILL은 기존 row의 `geocodingAddress`가 있으면 그 값을, 없으면 저장된 표시 `address` 전체를
+provider 입력으로 사용한다. 서버가 건물명·층을 제거하거나 일본어로 바꾸지 않는다. 자동 채택 조건을
+통과하지 못하면 REVIEW_REQUIRED로 남기고, 운영자가 표시 주소를 보존한 채 명시 override를 입력해 재처리한다.
 
 운영 Google 계정·계약·청구·키·허용 보존 기간·호출 예산·관광 지역 매핑·백업 정책은
 확정되지 않았다. 아래 값과 테스트는 합성 예시다. 실제 일괄 실행·삭제·배포·merge는 수행하지 않았다.
@@ -14,7 +17,8 @@ Google 호출과 자동 재시도는 #224 worker, HTTP는 #222 adapter 한 곳�
 
 기존 `./gradlew bootJar`의 `build/libs/app.jar`에 CLI도 들어 있다. 일반 서버와 CLI의 시작점은 다르다.
 CLI는 web, Flyway, worker, scheduler, Google adapter, Redis, SQS를 부트스트랩하지 않는다.
-먼저 배포 절차로 V38 위치, V39 작업, V40 유지보수 migration을 순서대로 적용해야 한다. CLI는 schema를 `validate`만 한다.
+먼저 배포 절차로 V38 위치, V39 작업, V39.1 위치 확인 주소, V39.2 Places 선택,
+V39.3 위치 확인 기록, V40 유지보수 migration을 순서대로 적용해야 한다. CLI는 schema를 `validate`만 한다.
 `ddl-auto=create` 등의 입력은 validate로 덮어쓰며 SQL 초기화도 하지 않는다.
 
 접속값은 승인된 환경의 `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`,
@@ -169,7 +173,9 @@ PENDING/RETRY_WAIT/FAILED/REVIEW_REQUIRED는 새 작업을 자동 등록하지 �
 설정 검증은 `0 <= purge-ahead < refresh-ahead <= 30d`를 확인한다.
 
 성공하면 새 좌표와 취득·만료 시각을 함께 교체한다. 실패는 이전 validUntil을 연장하지 않는다.
-주소가 바뀌면 선행 #233의 주소 revision 처리로 이전 좌표를 즉시 지운다.
+식당명·현지명·표시 주소 또는 실제 provider 입력(`geocodingAddress`, 없으면 `address`)이 바뀌면
+선행 #233의 revision 처리로 이전 좌표와 확인 기록을 즉시 지우고 다시 확인한다.
+같은 명시 override를 유지해도 표시 주소·층이 바뀌면 재확인한다. 동일한 입력의 수정 요청은 기존 좌표와 진행 중 작업을 보존한다.
 유효기한이 되면 공개 조회는 즉시 제외하고, DB 값은 다음 정리 주기에 제거한다.
 기본 정상 상태에서도 **DB 물리 제거는 최대 한 polling 주기와 처리 시간만큼 늦을 수 있다.**
 조회 제외와 DB 삭제 완료는 다르다. 서버/DB 장애나 backlog가 있으면 더 늦어질 수 있다.

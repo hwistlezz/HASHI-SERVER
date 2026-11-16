@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.sopt.hashi.auth.internal.jwt.JwtProvider;
 import org.sopt.hashi.auth.internal.onboarding.OnboardingJwtIssuer;
 import org.sopt.hashi.auth.internal.token.OnboardingTokenStore;
+import org.sopt.hashi.auth.internal.token.TokenBlacklist;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.ComponentScan.Filter;
@@ -27,7 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
         JwtAuthenticationEntryPoint.class, JwtAccessDeniedHandler.class,
         PublicRestaurantAuthorizationTest.TestController.class})
 @TestPropertySource(properties = {
-        "jwt.secret=test-secret-key-must-be-at-least-32-bytes-long",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "jwt.access-token-ttl=30m",
         "jwt.refresh-token-ttl=14d",
         "jwt.onboarding-token-ttl=30m",
@@ -47,6 +48,10 @@ class PublicRestaurantAuthorizationTest {
 
     @MockitoBean
     OnboardingTokenStore onboardingTokenStore;
+
+    // 탈퇴 블랙리스트 대조도 Redis라 모킹한다 — 기본값(false)이라 차단 없이 통과한다
+    @MockitoBean
+    TokenBlacklist tokenBlacklist;
 
     @Test
     @DisplayName("비회원은 식당 메뉴 상세 API에 접근할 수 있다")

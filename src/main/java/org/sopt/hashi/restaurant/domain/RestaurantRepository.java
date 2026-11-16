@@ -1,21 +1,39 @@
 package org.sopt.hashi.restaurant.domain;
 
+import jakarta.persistence.LockModeType;
 import java.time.DayOfWeek;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
-import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface RestaurantRepository extends JpaRepository<Restaurant, Long>, JpaSpecificationExecutor<Restaurant> {
 
     Optional<Restaurant> findByIdAndDeletedFalse(Long id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select restaurant from Restaurant restaurant where restaurant.id = :restaurantId")
+    Optional<Restaurant> findByIdForUpdate(@Param("restaurantId") Long restaurantId);
+
     boolean existsByIdAndDeletedFalse(Long id);
+
+    List<Restaurant> findAllByIdInAndDeletedFalse(Collection<Long> ids);
+
+    // 어드민 등록·수정 중복 검사(#230) — 비교는 컬럼 collation(utf8mb4_unicode_ci)을 따른다(대소문자·끝 공백 무시)
+    boolean existsByNameAndDeletedFalse(String name);
+
+    boolean existsByAddressAndDeletedFalse(String address);
+
+    boolean existsByNameAndIdNotAndDeletedFalse(String name, Long id);
+
+    boolean existsByAddressAndIdNotAndDeletedFalse(String address, Long id);
 
     @EntityGraph(attributePaths = "businessHours")
     @Query("select distinct r from Restaurant r where r.id = :restaurantId and r.deleted = false")
@@ -25,20 +43,26 @@ public interface RestaurantRepository extends JpaRepository<Restaurant, Long>, J
     @Query("select distinct r from Restaurant r where r.id = :restaurantId and r.deleted = false")
     Optional<Restaurant> findActiveByIdWithImages(@Param("restaurantId") Long restaurantId);
 
+    /** 예약·리뷰의 과거 표시를 위해 soft-delete 식당도 대표 이미지 association과 함께 조회한다. */
+    @EntityGraph(attributePaths = "images")
+    @Query("select distinct r from Restaurant r where r.id = :restaurantId")
+    Optional<Restaurant> findByIdWithImages(@Param("restaurantId") Long restaurantId);
+
+    /** 교차 모듈 목록 enrich에서 이미지 collection N+1 없이 soft-delete 식당까지 조회한다. */
+    @EntityGraph(attributePaths = "images")
+    @Query("select distinct r from Restaurant r where r.id in :restaurantIds")
+    List<Restaurant> findAllByIdWithImages(@Param("restaurantIds") List<Long> restaurantIds);
+
+    // 랜덤 추천 — 큐레이션 조건 없이 전체 활성 식당에서 뽑는다(#154). rand() 정렬은 식당 수가 적은 규모를 전제로 한다.
     @Query(value = """
             select r.id
             from restaurant r
-            join restaurant_curation_type rct on rct.restaurant_id = r.id
             where r.deleted = false
-                and rct.curation_type = :curationType
                 and (:excludeRestaurantId is null or r.id <> :excludeRestaurantId)
             order by rand()
             limit 1
             """, nativeQuery = true)
-    Optional<Long> findRandomRestaurantIdByCurationTypeExcluding(
-            @Param("curationType") String curationType,
-            @Param("excludeRestaurantId") Long excludeRestaurantId
-    );
+    Optional<Long> findRandomRestaurantIdExcluding(@Param("excludeRestaurantId") Long excludeRestaurantId);
 
     @Query("""
             select businessHour
@@ -58,13 +82,38 @@ public interface RestaurantRepository extends JpaRepository<Restaurant, Long>, J
             where m.restaurant.id = :restaurantId
                 and m.restaurant.deleted = false
                 and (:excludeMenuId is null or m.id <> :excludeMenuId)
-                and (:cursor is null or m.id < :cursor)
-            order by m.id desc
+                and (
+                    :cursorId is null
+                    or (
+                        :cursorMain = true
+                        and (
+                            m.main = false
+                            or (
+                                m.main = true
+                                and (
+                                    m.name > :cursorName
+                                    or (m.name = :cursorName and m.id < :cursorId)
+                                )
+                            )
+                        )
+                    )
+                    or (
+                        :cursorMain = false
+                        and m.main = false
+                        and m.id < :cursorId
+                    )
+                )
+            order by
+                case when m.main = true then 0 else 1 end asc,
+                case when m.main = true then m.name else '' end asc,
+                m.id desc
             """)
     List<RestaurantMenu> findMenusByRestaurantId(
             @Param("restaurantId") Long restaurantId,
             @Param("excludeMenuId") Long excludeMenuId,
-            @Param("cursor") Long cursor,
+            @Param("cursorMain") Boolean cursorMain,
+            @Param("cursorName") String cursorName,
+            @Param("cursorId") Long cursorId,
             Pageable pageable
     );
 
@@ -133,4 +182,20 @@ public interface RestaurantRepository extends JpaRepository<Restaurant, Long>, J
               and rating_sum >= :rating
             """, nativeQuery = true)
     int decreaseReviewStatistics(@Param("restaurantId") Long restaurantId, @Param("rating") int rating);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            update restaurant
+            set rating = round((rating_sum - :oldRating + :newRating) * 1.0 / review_count, 1),
+                rating_sum = rating_sum - :oldRating + :newRating
+            where id = :restaurantId
+              and review_count > 0
+              and rating_sum >= :oldRating
+              and rating_sum - :oldRating + :newRating >= 0
+            """, nativeQuery = true)
+    int updateReviewRatingStatistics(
+            @Param("restaurantId") Long restaurantId,
+            @Param("oldRating") int oldRating,
+            @Param("newRating") int newRating
+    );
 }

@@ -20,6 +20,7 @@ repositories {
 
 ext {
     set('springModulithVersion', '1.4.3')
+    set('springCloudAwsVersion', '3.4.2')
 }
 
 dependencies {
@@ -50,9 +51,15 @@ dependencies {
 
     // redis
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    // TCP_USER_TIMEOUT(리눅스 전용 소켓 옵션) 적용용 netty 네이티브 전송.
+    // 운영 아키텍처 변경(예: ARM 이전)에도 epoll이 유지되도록 두 아키텍처를 모두 싣고,
+    // 로드 성공 여부는 부팅 시 RedisConfig가 로그로 남긴다(조용한 NIO fallback 방지).
+    runtimeOnly 'io.netty:netty-transport-native-epoll::linux-x86_64'
+    runtimeOnly 'io.netty:netty-transport-native-epoll::linux-aarch_64'
 
     // aws
-    implementation 'software.amazon.awssdk:s3:2.25.60'
+    implementation 'software.amazon.awssdk:s3'
+    implementation 'io.awspring.cloud:spring-cloud-aws-starter-sqs'
 
     // validation
     implementation 'org.springframework.boot:spring-boot-starter-validation'
@@ -67,8 +74,11 @@ dependencies {
 
     // test
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation 'org.springframework.modulith:spring-modulith-starter-test'
     testImplementation 'com.tngtech.archunit:archunit-junit5:1.4.0'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:mysql'
     testCompileOnly 'org.projectlombok:lombok'
     testAnnotationProcessor 'org.projectlombok:lombok'
     testRuntimeOnly 'com.h2database:h2'
@@ -78,6 +88,7 @@ dependencies {
 dependencyManagement {
     imports {
         mavenBom "org.springframework.modulith:spring-modulith-bom:${springModulithVersion}"
+        mavenBom "io.awspring.cloud:spring-cloud-aws-dependencies:${springCloudAwsVersion}"
     }
 }
 
@@ -91,4 +102,22 @@ tasks.named('jar') {
 
 tasks.named('test') {
     useJUnitPlatform()
+    testLogging {
+        exceptionFormat = 'full'
+    }
+    inputs.files(
+            '.env.dev.example',
+            'infra/media/template.yaml',
+            'infra/media/parameters/dev.example.json',
+            'infra/media/parameters/prod.example.json',
+            '.github/workflows/ci-image-pipeline-infra.yml',
+            '.github/workflows/ci-restaurant-media-backfill.yml',
+            '.github/workflows/deploy-image-pipeline.yml'
+    ).withPropertyName('mediaBackfillInfrastructure')
+}
+
+tasks.named('processResources') {
+    from('media-specs') {
+        into 'media-specs'
+    }
 }

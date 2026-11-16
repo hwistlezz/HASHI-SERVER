@@ -8,17 +8,24 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.sopt.hashi.media.ImageReference;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantInfo;
+import org.sopt.hashi.restaurant.RestaurantCardInfo;
 import org.sopt.hashi.restaurant.RestaurantDetailInfo;
 import org.sopt.hashi.restaurant.RestaurantInfo;
 import org.sopt.hashi.restaurant.RestaurantPort;
 import org.sopt.hashi.restaurant.domain.Restaurant;
+import org.sopt.hashi.restaurant.domain.RestaurantImage;
 import org.sopt.hashi.restaurant.domain.RestaurantRepository;
 import org.sopt.hashi.shared.storage.FileStorage;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * {@link RestaurantPort} 구현 — 요약(id·name·address·대표 이미지)은 여기서 바로 조립하고,
+ * 상세처럼 목록 API와 같은 계산(오늘 영업시간·메뉴 이미지·가격대)이 필요한 것은 {@link RestaurantService}에 위임한다.
+ */
 @Component
 @Transactional(readOnly = true)
 class RestaurantPortImpl implements RestaurantPort {
@@ -40,11 +47,16 @@ class RestaurantPortImpl implements RestaurantPort {
     }
 
     @Override
+    public boolean existsActiveById(Long restaurantId) {
+        return restaurantId != null && restaurantRepository.existsByIdAndDeletedFalse(restaurantId);
+    }
+
+    @Override
     public Optional<RestaurantInfo> findSummaryById(Long restaurantId) {
         if (restaurantId == null) {
             return Optional.empty();
         }
-        return restaurantRepository.findById(restaurantId)
+        return restaurantRepository.findByIdWithImages(restaurantId)
                 .map(this::toInfo);
     }
 
@@ -64,7 +76,7 @@ class RestaurantPortImpl implements RestaurantPort {
             return List.of();
         }
 
-        Map<Long, RestaurantInfo> summariesById = restaurantRepository.findAllById(ids).stream()
+        Map<Long, RestaurantInfo> summariesById = restaurantRepository.findAllByIdWithImages(ids).stream()
                 .map(this::toInfo)
                 .collect(Collectors.toMap(RestaurantInfo::id, Function.identity()));
 
@@ -76,11 +88,30 @@ class RestaurantPortImpl implements RestaurantPort {
 
     @Override
     public Optional<RestaurantDetailInfo> findDetailById(Long restaurantId) {
-        if (restaurantId == null) {
-            return Optional.empty();
+        return restaurantService.findDetailById(restaurantId);
+    }
+
+    @Override
+    public List<RestaurantDetailInfo> findActiveDetails(Collection<Long> restaurantIds) {
+        return restaurantService.findActiveDetails(restaurantIds);
+    }
+
+    /** 이미지는 @BatchSize로 대표 이미지만 묶음 조회되므로 컬렉션 규모(수백 건)에서도 영업시간·카드 이미지 없이 가볍다. */
+    @Override
+    public List<RestaurantCardInfo> findActiveCards(Collection<Long> restaurantIds) {
+        if (restaurantIds == null || restaurantIds.isEmpty()) {
+            return List.of();
         }
-        return restaurantRepository.findById(restaurantId)
-                .map(this::toDetailInfo);
+        List<Long> ids = restaurantIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return restaurantRepository.findAllByIdInAndDeletedFalse(ids).stream()
+                .map(this::toCardInfo)
+                .toList();
     }
 
     @Override
@@ -96,6 +127,15 @@ class RestaurantPortImpl implements RestaurantPort {
     public void decreaseReviewStatistics(Long restaurantId, int rating) {
         if (restaurantRepository.decreaseReviewStatistics(restaurantId, rating) == 0) {
             throw new IllegalStateException("차감할 식당 리뷰 통계가 올바르지 않습니다.");
+        }
+    }
+
+    @Override
+    @Transactional
+    public void updateReviewRatingStatistics(Long restaurantId, int oldRating, int newRating) {
+        if (restaurantRepository.updateReviewRatingStatistics(
+                restaurantId, oldRating, newRating) == 0) {
+            throw new IllegalStateException("변경할 식당 리뷰 통계가 올바르지 않습니다.");
         }
     }
 
@@ -122,17 +162,33 @@ class RestaurantPortImpl implements RestaurantPort {
                 restaurant.getId(),
                 restaurant.getName(),
                 restaurant.getAddress(),
-                fileStorage.resolveFileUrl(restaurant.getThumbnailFileKey())
+                toThumbnailReference(restaurant)
         );
     }
 
-    private RestaurantDetailInfo toDetailInfo(Restaurant restaurant) {
-        return new RestaurantDetailInfo(
+    private RestaurantCardInfo toCardInfo(Restaurant restaurant) {
+        return new RestaurantCardInfo(
                 restaurant.getId(),
                 restaurant.getName(),
-                restaurant.getLocalName(),
-                restaurant.getAddress(),
-                fileStorage.resolveFileUrl(restaurant.getThumbnailFileKey())
+                restaurant.getArea(),
+                restaurant.getFoodCategory(),
+                restaurant.getPlaceType().value(),
+                restaurant.getRating(),
+                restaurant.getReviewCount(),
+                toThumbnailReference(restaurant)
         );
+    }
+
+    private ImageReference toThumbnailReference(Restaurant restaurant) {
+        return restaurant.getThumbnailImage()
+                .map(this::toImageReference)
+                .orElse(null);
+    }
+
+    private ImageReference toImageReference(RestaurantImage image) {
+        String legacyUrl = image.getFileKey() == null
+                ? null
+                : fileStorage.resolveFileUrl(image.getFileKey());
+        return new ImageReference(image.getImageAssetId(), legacyUrl);
     }
 }

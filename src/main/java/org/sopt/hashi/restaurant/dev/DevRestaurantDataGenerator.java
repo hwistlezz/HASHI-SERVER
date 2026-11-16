@@ -11,8 +11,8 @@ import org.sopt.hashi.restaurant.AdminRestaurantCommand.BusinessHourCommand;
 import org.sopt.hashi.restaurant.AdminRestaurantCommand.MenuCommand;
 import org.sopt.hashi.restaurant.domain.PriceCurrency;
 import org.sopt.hashi.restaurant.domain.RestaurantCurationType;
-import org.sopt.hashi.restaurant.domain.RestaurantFoodCategory;
 import org.sopt.hashi.restaurant.domain.RestaurantGenre;
+import org.sopt.hashi.restaurant.domain.RestaurantPlaceType;
 import org.sopt.hashi.restaurant.service.RestaurantService;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
@@ -32,6 +32,9 @@ public class DevRestaurantDataGenerator {
     private static final List<String> AREAS =
             List.of("이케부쿠로", "신주쿠", "시부야", "긴자", "아사쿠사", "우에노");
     private static final List<String> HASHTAGS = List.of("더미", "현지인맛집", "테스트");
+    // foodCategory는 자유 텍스트(#145) — 실데이터처럼 요리명 단위 샘플을 쓴다
+    private static final List<String> FOOD_CATEGORIES =
+            List.of("초밥", "라멘", "돈카츠", "야키니쿠", "스키야키", "텐동", "오마카세");
 
     private final RestaurantService restaurantService;
 
@@ -49,7 +52,8 @@ public class DevRestaurantDataGenerator {
     private AdminRestaurantCommand newDummyCommand(int seed) {
         String token = randomToken();
         RestaurantGenre genre = pick(RestaurantGenre.values(), seed);
-        RestaurantFoodCategory foodCategory = pick(RestaurantFoodCategory.values(), seed);
+        String foodCategory = pick(FOOD_CATEGORIES, seed);
+        RestaurantPlaceType placeType = pick(RestaurantPlaceType.values(), seed);
         RestaurantCurationType curationType = pick(RestaurantCurationType.values(), seed);
         BigDecimal minPrice = BigDecimal.valueOf(1000L * (1 + seed % 5));
         BigDecimal maxPrice = minPrice.add(BigDecimal.valueOf(3000));
@@ -59,14 +63,18 @@ public class DevRestaurantDataGenerator {
                 "ダミー食堂-" + token,
                 genre.description() + " 더미 식당",
                 "테스트용 더미 데이터로 생성된 식당입니다. 실제 가게가 아닙니다.",
-                "도쿄도 도시마구 더미 1-1-1",
+                // 주소도 중복 검사 대상(#230)이라 이름처럼 토큰을 붙여 반복 생성이 409로 막히지 않게 한다
+                "도쿄도 도시마구 더미-" + token + " 1-1-1",
                 pick(AREAS, seed),
                 genre.value(),
-                foodCategory.value(),
+                foodCategory,
+                placeType.value(),
                 PriceCurrency.JPY.value(),
                 minPrice,
                 maxPrice,
                 List.of("restaurants/dummy-" + token + "-1.jpg"),
+                null,
+                null,
                 List.of(new MenuCommand(
                         "더미 대표 메뉴", genre.description() + " 대표 구성",
                         "restaurant-menus/dummy-" + token + "-menu.jpg",

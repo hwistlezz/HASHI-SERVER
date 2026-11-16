@@ -47,7 +47,8 @@ public class AdminRestaurantController {
               "address": "도쿄도 도시마구 히가시이케부쿠로 1-1-1",
               "area": "이케부쿠로",
               "genre": "grill",
-              "foodCategory": "grill",
+              "foodCategory": "야키니쿠",
+              "placeType": "restaurant",
               "priceCurrency": "JPY",
               "minPrice": 3000,
               "maxPrice": 8000,
@@ -76,6 +77,18 @@ public class AdminRestaurantController {
             }
             """)))
     @ApiException(value = CommonErrorCode.class, codes = {"INVALID_INPUT", "UNAUTHORIZED", "FORBIDDEN"})
+    @ApiErrorResponse(status = HttpStatus.NOT_FOUND, code = "MEDIA-001",
+            message = "이미지 자산을 찾을 수 없습니다")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "MEDIA-006",
+            message = "현재 이미지 상태에서는 요청을 처리할 수 없습니다")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "MEDIA-007",
+            message = "이미 사용 중이거나 사용이 끝난 이미지입니다")
+    @ApiErrorResponse(status = HttpStatus.BAD_REQUEST, code = "MEDIA-008",
+            message = "같은 이미지 자산을 중복해서 요청할 수 없습니다")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "RESTAURANT-020",
+            message = "이미 등록된 식당명입니다.")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "RESTAURANT-021",
+            message = "이미 등록된 주소입니다.")
     @ApiSuccess(value = AdminSuccessCode.class, codes = {"RESTAURANT_CREATED"})
     @ResponseStatus(HttpStatus.CREATED)
     @PostMapping
@@ -93,6 +106,7 @@ public class AdminRestaurantController {
             {
               "name": "야키니쿠 리키마루 이케부쿠로 본점",
               "summary": "리뉴얼한 이케부쿠로 야키니쿠 맛집",
+              "placeType": "cafe",
               "menus": [
                 {
                   "menuId": 10,
@@ -116,10 +130,22 @@ public class AdminRestaurantController {
             }
             """)))
     @ApiException(value = CommonErrorCode.class, codes = {"INVALID_INPUT", "UNAUTHORIZED", "FORBIDDEN"})
+    @ApiErrorResponse(status = HttpStatus.NOT_FOUND, code = "MEDIA-001",
+            message = "이미지 자산을 찾을 수 없습니다")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "MEDIA-006",
+            message = "현재 이미지 상태에서는 요청을 처리할 수 없습니다")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "MEDIA-007",
+            message = "이미 사용 중이거나 사용이 끝난 이미지입니다")
+    @ApiErrorResponse(status = HttpStatus.BAD_REQUEST, code = "MEDIA-008",
+            message = "같은 이미지 자산을 중복해서 요청할 수 없습니다")
     @ApiErrorResponse(status = HttpStatus.NOT_FOUND, code = "RESTAURANT-004",
             message = "식당을 찾을 수 없습니다.")
     @ApiErrorResponse(status = HttpStatus.NOT_FOUND, code = "RESTAURANT-009",
             message = "메뉴를 찾을 수 없습니다.")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "RESTAURANT-020",
+            message = "이미 등록된 식당명입니다.")
+    @ApiErrorResponse(status = HttpStatus.CONFLICT, code = "RESTAURANT-021",
+            message = "이미 등록된 주소입니다.")
     @ApiSuccess(value = AdminSuccessCode.class, codes = {"RESTAURANT_UPDATED"})
     @PatchMapping("/{restaurantId}")
     public SuccessResponse<AdminRestaurantResponse> update(

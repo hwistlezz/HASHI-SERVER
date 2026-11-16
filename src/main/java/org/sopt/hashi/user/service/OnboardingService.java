@@ -2,6 +2,7 @@ package org.sopt.hashi.user.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.sopt.hashi.auth.AuthAccountPort;
+import org.sopt.hashi.media.MediaPort;
 import org.sopt.hashi.shared.error.BusinessException;
 import org.sopt.hashi.user.code.UserErrorCode;
 import org.sopt.hashi.user.domain.User;
@@ -18,10 +19,14 @@ public class OnboardingService {
 
     private final UserRepository userRepository;
     private final AuthAccountPort authAccountPort;
+    private final MediaPort mediaPort;
 
-    public OnboardingService(UserRepository userRepository, AuthAccountPort authAccountPort) {
+    public OnboardingService(UserRepository userRepository,
+                             AuthAccountPort authAccountPort,
+                             MediaPort mediaPort) {
         this.userRepository = userRepository;
         this.authAccountPort = authAccountPort;
+        this.mediaPort = mediaPort;
     }
 
     /**
@@ -33,17 +38,30 @@ public class OnboardingService {
         validateNotDuplicated(request);
         User user = saveUser(request);
         authAccountPort.linkOnboardingAccount(user.getId());
+        if (request.profileImageAssetId() != null) {
+            mediaPort.claimOnboardingProfile(request.profileImageAssetId(), user.getId());
+            user.assignOnboardingProfileImage(request.profileImageAssetId());
+        }
         // 회원 생성 시점 기록 — 프로필 값은 개인정보라 ID만 남긴다
         log.info("온보딩 가입 완료. userId={}", user.getId());
         return new OnboardingResponse(user.getId());
     }
 
-    /** 닉네임·이메일·연락처는 유니크다. 일반적인 경우 어느 필드가 중복인지 구체적으로 알려준다. */
+    /**
+     * 닉네임·이메일·연락처는 유니크다. 일반적인 경우 어느 필드가 중복인지 구체적으로 알려준다.
+     * 탈퇴 자리값 접두어·익명 닉네임 후보(REVIEW_POLICY §3 — 탈퇴 회원과 혼동 방지)와 탈퇴 자리값 이메일 도메인
+     * (먼저 가입되면 탈퇴 시 유니크 충돌)도 활성 회원이 쓸 수 없는데, 사용자 입장에서는 이미 쓰이는 값과 다를 바 없어
+     * 별도 코드 없이 중복으로 응답한다.
+     */
     private void validateNotDuplicated(CompleteOnboardingRequest request) {
-        if (userRepository.existsByNickname(request.nickname())) {
+        boolean isNicknameTaken = User.isReservedNickname(request.nickname())
+                || userRepository.existsByNickname(request.nickname());
+        if (isNicknameTaken) {
             throw new BusinessException(UserErrorCode.DUPLICATE_NICKNAME);
         }
-        if (userRepository.existsByEmail(request.email())) {
+        boolean isEmailTaken = User.isReservedEmail(request.email())
+                || userRepository.existsByEmail(request.email());
+        if (isEmailTaken) {
             throw new BusinessException(UserErrorCode.DUPLICATE_EMAIL);
         }
         if (userRepository.existsByPhone(request.phone())) {
@@ -53,6 +71,8 @@ public class OnboardingService {
 
     private User saveUser(CompleteOnboardingRequest request) {
         try {
+            // asset ID의 소유권 검증보다 users의 unique 제약이 먼저 실행되지 않게 한다.
+            // USER ID를 만든 뒤 같은 transaction에서 claim하고 프로필 슬롯에 연결한다.
             return userRepository.save(User.onboard(
                     request.nickname(), request.nameEng(), request.birthDate(),
                     request.phone(), request.email(), request.profileImageKey()));

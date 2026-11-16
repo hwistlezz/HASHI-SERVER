@@ -18,7 +18,7 @@ import org.sopt.hashi.shared.error.BusinessException;
  */
 class JwtProviderTest {
 
-    private static final String SECRET = "test-secret-key-must-be-at-least-32-bytes-long";
+    private static final String SECRET = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
     private JwtProvider providerWithAccessTtl(Duration accessTtl) {
         return new JwtProvider(new JwtProperties(SECRET, accessTtl,

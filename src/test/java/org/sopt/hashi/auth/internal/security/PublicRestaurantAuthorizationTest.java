@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
         JwtAuthenticationEntryPoint.class, JwtAccessDeniedHandler.class,
         PublicRestaurantAuthorizationTest.TestController.class})
 @TestPropertySource(properties = {
-        "jwt.secret=test-secret-key-must-be-at-least-32-bytes-long",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "jwt.access-token-ttl=30m",
         "jwt.refresh-token-ttl=14d",
         "jwt.onboarding-token-ttl=30m",

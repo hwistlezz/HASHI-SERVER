@@ -22,6 +22,11 @@ template과 배포 경로만 있으며, 이 문서만으로 실제 dev 또는 pr
 
 ## 보안 기준
 
+DEV 최초 IAM 준비는 [DEV bootstrap runbook](bootstrap/README.md)을 먼저 따른다.
+새 DEV 배포 경로는 worker/Spring runtime boundary를 필수로 검증하며 backfill/cleanup은 OFF로
+고정한다. 아래의 기존 DEV backfill/cleanup 활성화 설명은 이 bootstrap 상한을 변경하는 별도
+승인·검토 전에는 적용할 수 없다. production 수동 배포의 기존 계약은 그대로 유지한다.
+
 - original bucket은 Block Public Access, BucketOwnerEnforced, versioning, SSE-S3와 TLS 강제를 사용한다.
 - original bucket은 CloudFront origin이 아니며 public URL을 제공하지 않는다.
 - 브라우저 CORS는 `UploadAllowedOrigins`의 exact origin만 허용한다. wildcard는 dev workflow와 prod
@@ -92,6 +97,7 @@ dev workflow에는 아래 repository variable이 필요하다.
 | `MEDIA_DEV_WORKER_EVENT_SOURCE_ENABLED` | `true` 또는 `false`. 생략 시 안전하게 `false` |
 | `MEDIA_DEV_BACKFILL_ACCESS_ENABLED` | 승인된 legacy backfill용 임시 S3 권한. 생략 시 안전하게 `false` |
 | `MEDIA_DEV_CLEANUP_ACCESS_ENABLED` | 승인된 asset 정리용 S3 권한. 생략 시 안전하게 `false` |
+| `MEDIA_DEV_RECONCILIATION_READ_ACCESS_ENABLED` | DEV 파일 대조 점검용 상태·버전 목록 조회 권한. 생략 시 `false`, 삭제 권한 없음 |
 
 stack 이름은 variable로 받지 않고 `hashi-dev-media-pipeline`, `hashi-prod-media-pipeline`으로 고정한다.
 dev workflow와 prod 운영자는 기존 stack의 `EnvironmentName` parameter와 `Project`, `Component`,
@@ -150,6 +156,10 @@ worker와 규격 파일이 바뀌어도 인프라 CI를 실행한다. SAM의 `Co
 
 dev 배포와 prod artifact 생성은 `Build or Deploy Image Pipeline` workflow를 수동 실행한다.
 
+**Sharp 보안 업데이트 artifact는 v5 작업만 실행한다.** 이미 배포된 구 worker를 교체할 때는
+아래 최초 설치 순서보다 [v5 전환 절차](../../docs/media/worker-security-v5-rollout.md)를 먼저 따른다.
+발급 OFF와 구 작업 drain 없이 교체하거나, 구 규격 pointer 상태에서 발급만 ON으로 바꾸지 않는다.
+
 1. dev repository variable, OIDC trust, dev/prod 격리와 두 IAM role의 실제 policy를 먼저 확인한다.
 2. `dev`와 `MEDIA_DEV_WORKER_EVENT_SOURCE_ENABLED=false`로 최초 stack을 배포한다.
 3. 최초 stack이 original bucket의 versioning을 처음 활성화했다면 첫 PUT 또는 DELETE 전에 15분을
@@ -167,8 +177,13 @@ dev 배포와 prod artifact 생성은 `Build or Deploy Image Pipeline` workflow�
 8. 4~7단계 동안 DB의 `media_pipeline_config.issuance_enabled`는 `false`로 유지한다.
 9. worker compatibility를 확인한 뒤 `MEDIA_DEV_WORKER_EVENT_SOURCE_ENABLED=true`로 dev stack을 다시
    배포한다. 값이 없으면 worker를 켜지 않는다.
-10. 승인된 dev 절차로 upload, request, WebP 생성, result consume, READY 반영, CloudFront 전달과 DLQ
-   redrive까지 E2E를 통과한 뒤에만 dev issuance를 활성화한다.
+10. 원본 저장소·request/result queue·worker·Spring result consumer와 규격 version/digest를 먼저
+   확인한다. 이 준비가 끝나면 승인된 dev 시험 시간에만 issuance를 켜고, 시험 이미지로 upload,
+   request, WebP 생성, result consume, READY 반영과 CloudFront 전달을 확인한다. 발급이 꺼져 있으면
+   업로드 요청부터 `MEDIA-009`로 차단되므로 issuance OFF 상태에서는 이 E2E를 진행할 수 없다.
+   시험 실패 시 issuance를 다시 끄고 원인을 확인한다. 시험 asset/object는 기존 cleanup 계약에 따라
+   정리하고, DLQ redrive 검증까지 완료한 뒤 dev 클라이언트용 발급을 유지한다. 처리 환경이 준비되지
+   않은 상태에서 오류를 없애려고 issuance만 켜지는 않는다.
 11. prod는 검토된 `main` commit에서 `target=prod`,
     `production_confirmation=prepare-prod-artifact`로 workflow를 실행한다. build job은 7일 보존 GitHub
     artifact, source commit과 build ZIP SHA-256만 만들며 AWS credential을 요청하거나 production
@@ -214,9 +229,18 @@ IAM 허용만으로 backfill이 실행되지는 않는다. 별도로 Spring의
 
 ### Asset 정리의 추가 권한
 
+DEV에서 삭제 없이 파일 대조부터 확인하려면 `ReconciliationReadAccessEnabled`를 사용한다.
+기본 false이며 DEV에서만 `SpringApplicationReconciliationReadPolicy`를 생성한다. 허용 작업은
+두 bucket의 `GetBucketVersioning`과 media prefix의 `ListBucketVersions`뿐이다. 운영자가 Spring
+runtime boundary를 먼저 갱신한 후 위 repository variable을 true로 배포한다. 이 변경은 scheduler,
+일반 issuance, delivery versioning을 켜지 않는다. 두 bucket의 실제 versioning과 경로 소유권을 확인한
+뒤 별도 승인된 `DRY_RUN`만 실행한다. [상세 절차](bootstrap/README.md#삭제-없는-파일-대조를-준비할-때)를 따른다.
+
 `CleanupAccessEnabled=false`가 기본값이다. 승인된 dev 배포에서
 `MEDIA_DEV_CLEANUP_ACCESS_ENABLED=true`를 명시한 경우에만 별도의
 `SpringApplicationCleanupPolicy`를 기존 Spring EC2 role에 연결한다.
+단, 현재 DEV bootstrap은 이 flag의 true를 거부한다. 삭제 활성화는 별도 권한 검토가 필요하며,
+조회 점검을 위해 이 제한을 해제하지 않는다.
 
 - original의 `media/originals/*`, delivery의 `media/renditions/*`에만 version 목록과 삭제를 허용한다.
   목록은 bucket ARN에 prefix 조건을 두고, 삭제는 해당 object ARN에 `DeleteObject`와
@@ -233,8 +257,10 @@ IAM 허용만으로 backfill이 실행되지는 않는다. 별도로 Spring의
 기본 처리량은 프로세스당 한 실행에서 최대 50개 asset이다. 검증·중단·재시도·지표 해석은
 [asset cleanup runbook](../../docs/media/asset-cleanup-runbook.md)을 따른다. 같은 IAM policy를 사용하는
 DB 미참조 version과 폐기 spec 정리는 별도 Spring opt-in이며
-[object reconciliation runbook](../../docs/media/object-reconciliation-runbook.md)을 따른다. 두 정리 작업과
-dev E2E 전에는 issuance를 켜지 않는다.
+[object reconciliation runbook](../../docs/media/object-reconciliation-runbook.md)을 따른다. 두 정리 작업의
+준비와 dev E2E 검증을 마치기 전에는 일반 클라이언트용 issuance를 활성화하지 않는다.
+단, 위 배포 순서 10단계의 사전 준비를 마친 뒤 승인된 dev 시험 시간에는 E2E용으로만
+issuance를 켤 수 있다. 시험 실패 시 다시 끄고, 시험 데이터는 기존 cleanup 계약에 따라 정리한다.
 
 정체 복구는 기본적으로 처리 시작 10분 뒤부터 같은 결정적 job ID를 15분 간격, 최대 3회
 재발행한다. 값은 `AWS_MEDIA_PROCESSING_STALE_AGE`,

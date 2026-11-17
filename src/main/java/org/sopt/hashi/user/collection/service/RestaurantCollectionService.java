@@ -1,11 +1,13 @@
 package org.sopt.hashi.user.collection.service;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.sopt.hashi.auth.CurrentUserProvider;
@@ -53,6 +55,8 @@ public class RestaurantCollectionService {
     static final int MAX_SAVED_RESTAURANTS_PER_COLLECTION = 1000;
     /** 커버 그리드는 색상 1칸 + 대표 이미지 3칸이다(SAVED 시안). */
     static final int COVER_IMAGE_COUNT = 3;
+    private static final Pattern DESCRIPTION_WITHOUT_LINE_BREAK =
+            Pattern.compile(RestaurantCollection.DESCRIPTION_NO_LINE_BREAK_REGEX);
 
     private final RestaurantCollectionRepository restaurantCollectionRepository;
     private final SavedRestaurantRepository savedRestaurantRepository;
@@ -84,9 +88,7 @@ public class RestaurantCollectionService {
      */
     @Transactional
     public RestaurantCollectionResponse create(CreateRestaurantCollectionRequest request) {
-        Long userId = currentUserProvider.currentUserId();
-        userRepository.findByIdForUpdate(userId)
-                .orElseThrow(() -> new BusinessException(UserErrorCode.NOT_FOUND));
+        Long userId = lockCurrentUser();
         if (restaurantCollectionRepository.countByUserId(userId) >= MAX_COLLECTIONS_PER_USER) {
             throw new BusinessException(UserErrorCode.COLLECTION_LIMIT_EXCEEDED);
         }
@@ -94,8 +96,10 @@ public class RestaurantCollectionService {
         if (restaurantCollectionRepository.existsByUserIdAndName(userId, name)) {
             throw new BusinessException(UserErrorCode.DUPLICATE_COLLECTION_NAME);
         }
+        String description = normalizeDescription(request.description());
         RestaurantCollection collection = saveNewOrConflict(RestaurantCollection.create(
-                userId, name, toColor(request.color()), normalizeDescription(request.description()),
+                userId, name, toColor(request.color()),
+                description == null || description.isEmpty() ? null : description,
                 toVisibility(request.visibility())));
         log.info("컬렉션 생성. collectionId={}, userId={}", collection.getId(), userId);
         return new RestaurantCollectionResponse(
@@ -186,17 +190,22 @@ public class RestaurantCollectionService {
         collection.update(
                 name,
                 request.color() == null ? null : toColor(request.color()),
-                request.description(),
+                normalizeDescription(request.description()),
                 request.visibility() == null ? null : toVisibility(request.visibility()));
         flushOrConflict(UserErrorCode.DUPLICATE_COLLECTION_NAME);
         return toResponse(collection, true);
     }
 
-    /** 컬렉션 삭제(SAVED-007) — 컬렉션과 저장 관계만 지우고 식당 원본은 건드리지 않는다. */
+    /** 컬렉션 삭제(SAVED-007) — 컬렉션과 저장 관계만 지우고 식당 원본은 건드리지 않는다. 마지막 저장 관계가 사라진 식당은 저장 수를 줄인다. */
     @Transactional
     public void delete(Long collectionId) {
+        Long userId = lockCurrentUser();
         RestaurantCollection collection = collectionFinder.findOwnedForUpdate(collectionId);
+        Set<Long> removed = collection.getSavedRestaurants().stream()
+                .map(SavedRestaurant::getRestaurantId)
+                .collect(Collectors.toSet());
         restaurantCollectionRepository.delete(collection);
+        decreaseSaveCountsForUnsaved(userId, removed);
         log.info("컬렉션 삭제. collectionId={}, userId={}", collection.getId(), collection.getUserId());
     }
 
@@ -206,6 +215,7 @@ public class RestaurantCollectionService {
      */
     @Transactional
     public RestaurantCollectionResponse saveRestaurant(Long collectionId, SaveRestaurantRequest request) {
+        Long userId = lockCurrentUser();
         RestaurantCollection collection = collectionFinder.findOwnedForUpdate(collectionId);
         Long restaurantId = request.restaurantId();
         if (!restaurantPort.existsActiveById(restaurantId)) {
@@ -215,8 +225,12 @@ public class RestaurantCollectionService {
             throw new BusinessException(UserErrorCode.RESTAURANT_ALREADY_SAVED);
         }
         requireCapacity(collection, 1);
+        boolean isFirstSave = savedRestaurantRepository.findSavedRestaurantIds(userId, List.of(restaurantId)).isEmpty();
         collection.save(restaurantId);
         flushOrConflict(UserErrorCode.RESTAURANT_ALREADY_SAVED);
+        if (isFirstSave) {
+            restaurantPort.increaseSaveCount(restaurantId);
+        }
         return toResponse(collection, true);
     }
 
@@ -224,9 +238,11 @@ public class RestaurantCollectionService {
     @Transactional
     public RestaurantCollectionResponse removeRestaurants(Long collectionId, List<Long> restaurantIds) {
         Set<Long> targets = distinctIds(restaurantIds);
+        Long userId = lockCurrentUser();
         RestaurantCollection collection = collectionFinder.findOwnedForUpdate(collectionId);
         requireAllSaved(collection, targets);
         collection.remove(targets);
+        decreaseSaveCountsForUnsaved(userId, targets);
         return toResponse(collection, true);
     }
 
@@ -258,6 +274,36 @@ public class RestaurantCollectionService {
         targets.forEach(target::save);
         flushOrConflict(UserErrorCode.RESTAURANT_ALREADY_SAVED);
         return new MoveSavedRestaurantsResponse(toResponse(source, true), toResponse(target, true));
+    }
+
+    /**
+     * 식당 저장 수(#263)의 첫 저장·마지막 제거 판정은 같은 회원의 다른 컬렉션 쓰기와 엇갈리면 틀리므로
+     * 회원 행을 먼저 잠가 회원 단위로 직렬화한다. 잠금 순서는 회원 → 컬렉션 → 식당(포트의 UPDATE)으로 고정한다.
+     * 탈퇴(회원 행 잠금 뒤 컬렉션 삭제)와도 엇갈리지 않는다.
+     */
+    private Long lockCurrentUser() {
+        Long userId = currentUserProvider.currentUserId();
+        userRepository.findByIdForUpdate(userId)
+                .orElseThrow(() -> new BusinessException(UserErrorCode.NOT_FOUND));
+        return userId;
+    }
+
+    /** 제거한 식당 중 회원의 다른 컬렉션에도 남지 않은 것만 저장 수를 1 감소시킨다(마지막 저장 관계 삭제). */
+    private void decreaseSaveCountsForUnsaved(Long userId, Collection<Long> removedRestaurantIds) {
+        if (removedRestaurantIds.isEmpty()) {
+            return;
+        }
+        // orphanRemoval 삭제를 먼저 반영해야 남은 관계만 센다
+        restaurantCollectionRepository.flush();
+        Set<Long> stillSaved = new HashSet<>(
+                savedRestaurantRepository.findSavedRestaurantIds(userId, removedRestaurantIds));
+        List<Long> unsaved = removedRestaurantIds.stream()
+                .filter(id -> !stillSaved.contains(id))
+                .sorted()
+                .toList();
+        if (!unsaved.isEmpty()) {
+            restaurantPort.decreaseSaveCounts(unsaved);
+        }
     }
 
     private RestaurantCollectionResponse toResponse(RestaurantCollection collection, boolean owner) {
@@ -356,21 +402,45 @@ public class RestaurantCollectionService {
         return ids;
     }
 
-    /** 생성·수정 모두 입력 공백을 보존한다. 공백만인 이름은 서비스에서도 거부한다(2026-10-01 결정). */
+    /** 입력 길이 제한은 DTO와 같게 적용하고, 앞뒤 공백을 제거한 이름으로 저장·중복 검사한다. */
     private String normalizeName(String name) {
-        if (name == null || name.isEmpty() || name.length() > RestaurantCollection.NAME_MAX_LENGTH
-                || name.chars().allMatch(character -> isBlankChar((char) character))) {
+        if (name == null || name.length() > RestaurantCollection.NAME_MAX_LENGTH) {
             throw new BusinessException(CommonErrorCode.INVALID_INPUT);
         }
-        return name;
+        String normalized = stripBoundaryWhitespace(name);
+        if (normalized.isEmpty()) {
+            throw new BusinessException(CommonErrorCode.INVALID_INPUT);
+        }
+        return normalized;
+    }
+
+    /** NBSP·전각 공백도 제거하며 이름·설명 안쪽의 공백은 그대로 둔다. */
+    private String stripBoundaryWhitespace(String value) {
+        int start = 0;
+        int end = value.length();
+        while (start < end && isBlankChar(value.charAt(start))) {
+            start++;
+        }
+        while (end > start && isBlankChar(value.charAt(end - 1))) {
+            end--;
+        }
+        return value.substring(start, end);
     }
 
     private static boolean isBlankChar(char character) {
-        return Character.isWhitespace(character) || Character.isSpaceChar(character);
+        return Character.isWhitespace(character) || Character.isSpaceChar(character) || character == '\u0085';
     }
 
     private String normalizeDescription(String description) {
-        return description == null || description.isEmpty() ? null : description;
+        if (description == null) {
+            return null;
+        }
+        if (description.length() > RestaurantCollection.DESCRIPTION_MAX_LENGTH
+                || !DESCRIPTION_WITHOUT_LINE_BREAK.matcher(description).matches()) {
+            throw new BusinessException(CommonErrorCode.INVALID_INPUT);
+        }
+        // PATCH는 null이면 유지, 빈 문자열이면 삭제하므로 두 값을 구분한다.
+        return stripBoundaryWhitespace(description);
     }
 
     private CollectionColor toColor(String value) {

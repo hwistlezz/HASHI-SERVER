@@ -103,6 +103,8 @@ jobs:
           node --test infra/media/scripts/check-delivery-lifecycle.test.mjs
           node --test infra/media/scripts/check-worker-iam.test.mjs
           node infra/media/scripts/check-worker-iam.mjs infra/media/template.yaml
+          node --test infra/media/scripts/check-dev-runtime-boundaries.test.mjs
+          node --test infra/media/scripts/check-dev-bootstrap.test.mjs
 
       - name: Install and test worker
         working-directory: worker/image-transform
@@ -140,6 +142,8 @@ jobs:
           sam validate --lint --region ap-northeast-2 --template-file infra/media/template.yaml
           sam validate --lint --region ap-northeast-2 \
             --template-file infra/media/bootstrap/cloudformation-execution-boundary.yaml
+          sam validate --lint --region ap-northeast-2 --template-file infra/media/bootstrap/dev-runtime-boundaries.json
+          sam validate --lint --region ap-northeast-2 --template-file infra/media/bootstrap/dev-deployment-roles.json
           sam build --template-file infra/media/template.yaml --build-dir .aws-sam/media-build
 
       - name: Upload immutable Lambda build artifact
@@ -194,6 +198,7 @@ jobs:
           MEDIA_DEV_WORKER_EVENT_SOURCE_ENABLED: ${{ vars.MEDIA_DEV_WORKER_EVENT_SOURCE_ENABLED }}
           MEDIA_DEV_BACKFILL_ACCESS_ENABLED: ${{ vars.MEDIA_DEV_BACKFILL_ACCESS_ENABLED }}
           MEDIA_DEV_CLEANUP_ACCESS_ENABLED: ${{ vars.MEDIA_DEV_CLEANUP_ACCESS_ENABLED }}
+          MEDIA_DEV_RECONCILIATION_READ_ACCESS_ENABLED: ${{ vars.MEDIA_DEV_RECONCILIATION_READ_ACCESS_ENABLED }}
         run: |
           set -euo pipefail
 
@@ -234,7 +239,8 @@ jobs:
           selected[MEDIA_WORKER_EVENT_SOURCE_ENABLED]="${MEDIA_DEV_WORKER_EVENT_SOURCE_ENABLED:-false}"
           selected[MEDIA_BACKFILL_ACCESS_ENABLED]="${MEDIA_DEV_BACKFILL_ACCESS_ENABLED:-false}"
           selected[MEDIA_CLEANUP_ACCESS_ENABLED]="${MEDIA_DEV_CLEANUP_ACCESS_ENABLED:-false}"
-          for optional_name in MEDIA_ALARM_NOTIFICATION_TOPIC_ARN MEDIA_WORKER_EVENT_SOURCE_ENABLED MEDIA_BACKFILL_ACCESS_ENABLED MEDIA_CLEANUP_ACCESS_ENABLED; do
+          selected[MEDIA_RECONCILIATION_READ_ACCESS_ENABLED]="${MEDIA_DEV_RECONCILIATION_READ_ACCESS_ENABLED:-false}"
+          for optional_name in MEDIA_ALARM_NOTIFICATION_TOPIC_ARN MEDIA_WORKER_EVENT_SOURCE_ENABLED MEDIA_BACKFILL_ACCESS_ENABLED MEDIA_CLEANUP_ACCESS_ENABLED MEDIA_RECONCILIATION_READ_ACCESS_ENABLED; do
             if [[ "${selected[${optional_name}]}" == *$'\n'* || "${selected[${optional_name}]}" == *$'\r'* ]]; then
               echo "Optional repository variables cannot contain a newline."
               exit 1
@@ -290,7 +296,7 @@ jobs:
             fi
           done
 
-          for flag_name in MEDIA_WORKER_EVENT_SOURCE_ENABLED MEDIA_BACKFILL_ACCESS_ENABLED MEDIA_CLEANUP_ACCESS_ENABLED; do
+          for flag_name in MEDIA_WORKER_EVENT_SOURCE_ENABLED MEDIA_BACKFILL_ACCESS_ENABLED MEDIA_CLEANUP_ACCESS_ENABLED MEDIA_RECONCILIATION_READ_ACCESS_ENABLED; do
             flag_value="${selected[${flag_name}]}"
             if [[ "${flag_value}" != "true" && "${flag_value}" != "false" ]]; then
               echo "${flag_name} must be true or false."
@@ -354,6 +360,8 @@ jobs:
           test -f worker/image-transform/artifacts/package/media-specs/v1.json
           test -f worker/image-transform/artifacts/package/media-specs/v2.json
           test -f worker/image-transform/artifacts/package/media-specs/v3.json
+          test -f worker/image-transform/artifacts/package/media-specs/v4.json
+          test -f worker/image-transform/artifacts/package/media-specs/v5.json
 
       - name: Set up AWS SAM CLI 1.165.0
         uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
@@ -458,6 +466,8 @@ jobs:
           fi
 
           aws iam get-role --role-name "${MEDIA_SPRING_APPLICATION_ROLE_NAME}" >/dev/null
+
+          node infra/media/scripts/check-dev-runtime-boundaries.mjs
 
           node infra/media/scripts/check-cloudformation-pass-role.mjs \
             "${AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN}" \
@@ -569,6 +579,7 @@ jobs:
             "WorkerEventSourceEnabled=${MEDIA_WORKER_EVENT_SOURCE_ENABLED}"
             "BackfillAccessEnabled=${MEDIA_BACKFILL_ACCESS_ENABLED}"
             "CleanupAccessEnabled=${MEDIA_CLEANUP_ACCESS_ENABLED}"
+            "ReconciliationReadAccessEnabled=${MEDIA_RECONCILIATION_READ_ACCESS_ENABLED}"
             "SourceCommitSha=${SOURCE_COMMIT_SHA}"
             "WorkerBuildArtifactSha256=${WORKER_BUILD_ARTIFACT_SHA256}"
           )

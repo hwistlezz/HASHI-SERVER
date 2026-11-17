@@ -103,6 +103,9 @@ class ReviewUpdateConcurrencyMySqlTest {
     private RestaurantMapService restaurantMapService;
 
     @MockitoBean
+    private MapRegionAdminService mapRegionAdminService;
+
+    @MockitoBean
     private RestaurantLocationService restaurantLocationService;
 
     @MockitoBean
@@ -256,7 +259,7 @@ class ReviewUpdateConcurrencyMySqlTest {
                 rating,
                 List.of("GOOD_VALUE"),
                 content,
-                List.of()
+                List.of(), null
         );
     }
 

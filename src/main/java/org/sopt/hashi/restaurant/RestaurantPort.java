@@ -16,6 +16,12 @@ public interface RestaurantPort {
     /** 삭제되지 않은 식당인지 확인한다 — 컬렉션 저장처럼 사용자에게 노출 가능한 식당만 받아야 하는 검증용(#216). */
     boolean existsActiveById(Long restaurantId);
 
+    /** 대표사진 참조를 displayOrder·ID 순으로 조회한다. 이미지 원본이나 Entity는 읽지 않는다. */
+    List<RestaurantPhotoSourceInfo> findRepresentativePhotoSources(Long restaurantId);
+
+    /** 메뉴사진 참조를 등록 ID 순으로 조회한다. 사진이 없는 메뉴는 제외한다. */
+    List<RestaurantPhotoSourceInfo> findMenuPhotoSources(Long restaurantId);
+
     /** 식당 요약 정보를 조회한다 — 식당명 등 표시·enrich용. 없으면 empty. */
     Optional<RestaurantInfo> findSummaryById(Long restaurantId);
 
@@ -44,6 +50,13 @@ public interface RestaurantPort {
      * 상세와 달리 영업시간·이미지 전체·가격대는 읽지 않는다. 삭제된 식당은 제외하고 존재하는 식당만 반환하며 순서는 보장하지 않는다.
      */
     List<RestaurantCardInfo> findActiveCards(Collection<Long> restaurantIds);
+
+    /**
+     * 주어진 ID 중 삭제되지 않은 식당 수 — 마이페이지 저장 식당 수처럼 개수만 필요한 집계용(#259).
+     * 카드 정보를 읽지 않아 findActiveCards보다 가볍다. null·중복 ID는 무시하고 입력이 비면 0이다.
+     */
+    long countActiveByIds(Collection<Long> restaurantIds);
+
     /** 리뷰 생성 시 식당 평점 합계·리뷰 수·평균을 원자적으로 증가시킨다. */
     void increaseReviewStatistics(Long restaurantId, int rating);
 
@@ -52,6 +65,12 @@ public interface RestaurantPort {
 
     /** 리뷰 별점 변경 시 리뷰 수는 유지하고 평점 합계·평균을 원자적으로 갱신한다. */
     void updateReviewRatingStatistics(Long restaurantId, int oldRating, int newRating);
+
+    /** 회원이 식당을 처음 저장할 때 저장 수를 1 증가시킨다(#263). 회원 한 명당 최대 1이며 첫 저장 판정은 호출 측(user)이 한다. */
+    void increaseSaveCount(Long restaurantId);
+
+    /** 회원의 마지막 저장 관계가 사라진 식당들의 저장 수를 1씩 감소시킨다(#263). 0 아래로 내려가지 않으며 중복 없는 ID를 받는다. */
+    void decreaseSaveCounts(Collection<Long> restaurantIds);
 
     /** 어드민 식당 등록 — 이미지·메뉴 사진은 업로드 완료된 S3 키로 받는다. */
     AdminRestaurantInfo createByAdmin(AdminRestaurantCommand command);
@@ -79,6 +98,18 @@ public interface RestaurantPort {
 
     /** expectedAddressRevision이 현재와 일치할 때 같은 주소의 새 작업을 등록한다. */
     RestaurantLocationInfo retryLocationByAdmin(Long restaurantId, long expectedAddressRevision);
+
+    /** 활성·비활성 지역을 표시 순서·ID 순으로 조회한다. page는 0부터, size는 1~100이다. */
+    AdminMapRegionInfo.Page getMapRegionsByAdmin(int page, int size);
+
+    /** 안정적인 code로 전체 설정을 교체한다. 동일 요청 재전송·동시 생성에도 ID는 유지한다. */
+    AdminMapRegionInfo upsertMapRegionByAdmin(String code, AdminMapRegionCommand command);
+
+    /** 현재 단일 소속을 조회한다. 미배정은 null, 없는/삭제 식당은 거절한다. */
+    Long getMapRegionByAdmin(Long restaurantId);
+
+    /** 없는/삭제 식당은 거절하고, 존재하는 비활성 지역도 지정 가능하다. null은 소속 해제다. */
+    Long assignMapRegionByAdmin(Long restaurantId, Long mapRegionId);
 
     /** 관리자 위치 검토 목록. restaurantId 오름차순 offset 페이지로 활성 식당만 조회한다. */
     RestaurantLocationReviewPage findLocationReviewsByAdmin(

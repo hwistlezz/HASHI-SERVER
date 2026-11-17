@@ -125,6 +125,7 @@ class LocationJobMySqlTest {
     @MockitoBean CurrentActorProvider currentActorProvider;
     @MockitoBean FileStorage fileStorage;
     @MockitoBean RestaurantMapService restaurantMapService;
+    @MockitoBean MapRegionAdminService mapRegionAdminService;
 
     @BeforeEach
     void reset() {
@@ -927,7 +928,10 @@ class LocationJobMySqlTest {
                 JOIN restaurant_location l ON l.id=r.location_id WHERE r.id=?
                 """, Integer.class, id)).isEqualTo(30);
         assertThat(restaurantPort.findLocationReviewsByAdmin("READY", "GOOGLE_PLACES", 0, 20).restaurants())
-                .extracting("restaurantId").contains(id);
+                .singleElement().satisfies(item -> {
+                    assertThat(item.restaurantId()).isEqualTo(id);
+                    assertThat(item.confirmedByAdminId()).isEqualTo(7L);
+                });
     }
 
     @Test

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.sopt.hashi.auth.ActorType;
@@ -129,6 +130,29 @@ class MediaPortImplTest {
 
         verify(currentActorProvider, never()).currentActor();
         verify(imageAssetRepository, never()).findIdentitiesByPublicIdIn(anyCollection());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ImageProcessingStatus.class, names = {"PROCESSING", "READY"})
+    void 리뷰_수정용_claim은_READY만_허용한다(ImageProcessingStatus status) {
+        UUID id = UUID.randomUUID();
+        ImageAsset candidate = asset(id, MediaPurpose.REVIEW, MediaOwnerType.USER, 7L,
+                status, ImageBindingStatus.UNBOUND, MediaCleanupStatus.ACTIVE);
+        when(currentActorProvider.currentActor()).thenReturn(new CurrentActor(ActorType.USER, 7L));
+        when(purposeAccessPolicy.isAllowed(ActorType.USER, MediaPurpose.REVIEW)).thenReturn(true);
+        when(imageAssetRepository.findIdentitiesByPublicIdIn(anyCollection()))
+                .thenReturn(List.of(identity(1L, id)));
+        when(imageAssetRepository.findAllByIdInForUpdate(List.of(1L))).thenReturn(List.of(candidate));
+        if (status == ImageProcessingStatus.READY) {
+            mediaPort.reconcileBindings(List.of(new MediaAssetUse(id, MediaAssetPurpose.REVIEW, true)), List.of());
+            verify(candidate).bind();
+        } else {
+            assertThatThrownBy(() -> mediaPort.reconcileBindings(
+                    List.of(new MediaAssetUse(id, MediaAssetPurpose.REVIEW, true)), List.of()))
+                    .isInstanceOf(BusinessException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", MediaErrorCode.INVALID_STATE);
+            verify(candidate, never()).bind();
+        }
     }
 
     @Test
@@ -574,14 +598,20 @@ class MediaPortImplTest {
             int width,
             int height
     ) {
+        return rendition(assetId, role, width, height, 1);
+    }
+
+    private RenditionImageProjection rendition(
+            UUID assetId, ImageRole role, int width, int height, int version
+    ) {
         return new TestRenditionImageProjection(
                 assetId,
                 role,
                 "image/webp",
                 width,
                 height,
-                "media/renditions/%s/v1/%s/%d.webp".formatted(
-                        assetId, role.name().toLowerCase(), width)
+                "media/renditions/%s/v%d/%s/%d.webp".formatted(
+                        assetId, version, role.name().toLowerCase().replace('_', '-'), width)
         );
     }
 
@@ -676,5 +706,93 @@ class MediaPortImplTest {
 
         @Override
         public String getObjectKey() { return objectKey; }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = MediaPurpose.class, names = {"RESTAURANT", "RESTAURANT_MENU"})
+    void 이전_spec의_사진은_원본이나_crop_대신_UNAVAILABLE을_반환한다(MediaPurpose purpose) {
+        UUID id = UUID.randomUUID();
+        MediaImageRequest request = new MediaImageRequest(id, MediaImageRole.PHOTO_DETAIL);
+        when(imageAssetRepository.findImageProjectionsByPublicIdIn(anyCollection()))
+                .thenReturn(List.of(projection(id, purpose, ImageProcessingStatus.READY,
+                        ImageBindingStatus.BOUND, MediaCleanupStatus.ACTIVE,
+                        1, SPEC_DIGEST, null, null, null)));
+        when(imageRenditionRepository.findActiveImageProjections(anyCollection(), anyCollection()))
+                .thenReturn(List.of());
+        assertThat(mediaPort.findImages(List.of(request)).get(request)).satisfies(image -> {
+            assertThat(image.status()).isEqualTo(MediaImageStatus.UNAVAILABLE);
+            assertThat(image.defaultSource()).isNull();
+            assertThat(image.sourceSets()).isEmpty();
+        });
+        verify(fileStorage, never()).resolveFileUrl(anyString());
+    }
+
+    @Test
+    void 최신_규격에서도_purpose가_지원하지_않는_role은_노출하지_않는다() {
+        UUID id = UUID.randomUUID();
+        when(imageAssetRepository.findImageProjectionsByPublicIdIn(anyCollection()))
+                .thenReturn(List.of(projection(id, MediaPurpose.MAGAZINE_BANNER, ImageProcessingStatus.READY,
+                        ImageBindingStatus.BOUND, MediaCleanupStatus.ACTIVE,
+                        1, SPEC_DIGEST, null, null, null)));
+        when(imageRenditionRepository.findActiveImageProjections(anyCollection(), anyCollection()))
+                .thenReturn(List.of());
+        assertThat(mediaPort.findImages(List.of(new MediaImageRequest(id, MediaImageRole.PHOTO_DETAIL)))).isEmpty();
+        verify(fileStorage, never()).resolveFileUrl(anyString());
+    }
+
+    @Test
+    void 구규격에서_지원하지_않는_role도_정리중인_실패자산에는_UNAVAILABLE을_노출하지_않는다() {
+        UUID id = UUID.randomUUID();
+        when(imageAssetRepository.findImageProjectionsByPublicIdIn(anyCollection()))
+                .thenReturn(List.of(projection(id, MediaPurpose.RESTAURANT, ImageProcessingStatus.FAILED,
+                        ImageBindingStatus.BOUND, MediaCleanupStatus.PURGING,
+                        1, SPEC_DIGEST, null, null, null)));
+        when(imageRenditionRepository.findActiveImageProjections(anyCollection(), anyCollection()))
+                .thenReturn(List.of());
+        assertThat(mediaPort.findImages(List.of(new MediaImageRequest(id, MediaImageRole.PHOTO_DETAIL)))).isEmpty();
+    }
+
+    @Test
+    void 사진_role도_잘못된_digest와_미연결_자산을_노출하지_않는다() {
+        UUID invalid = UUID.randomUUID();
+        UUID unbound = UUID.randomUUID();
+        when(imageAssetRepository.findImageProjectionsByPublicIdIn(anyCollection()))
+                .thenReturn(List.of(
+                        projection(invalid, MediaPurpose.RESTAURANT, ImageProcessingStatus.READY,
+                                ImageBindingStatus.BOUND, MediaCleanupStatus.ACTIVE,
+                                1, "0".repeat(64), null, null, null),
+                        projection(unbound, MediaPurpose.RESTAURANT, ImageProcessingStatus.READY,
+                                ImageBindingStatus.UNBOUND, MediaCleanupStatus.ACTIVE,
+                                1, SPEC_DIGEST, null, null, null)));
+        when(imageRenditionRepository.findActiveImageProjections(anyCollection(), anyCollection()))
+                .thenReturn(List.of());
+        assertThat(mediaPort.findImages(List.of(
+                new MediaImageRequest(invalid, MediaImageRole.PHOTO_DETAIL),
+                new MediaImageRequest(unbound, MediaImageRole.PHOTO_DETAIL)))).isEmpty();
+        verify(fileStorage, never()).resolveFileUrl(anyString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {4, 5})
+    void active_version의_원본비율_기본_파생본을_반환한다(int version) {
+        UUID id = UUID.randomUUID();
+        var spec = new MediaSpecRegistry(new ObjectMapper()).findDefinition(version).orElseThrow();
+        MediaImageRequest request = new MediaImageRequest(id, MediaImageRole.PHOTO_DETAIL);
+        when(imageAssetRepository.findImageProjectionsByPublicIdIn(anyCollection()))
+                .thenReturn(List.of(new TestAssetImageProjection(id, MediaPurpose.RESTAURANT,
+                        ImageProcessingStatus.READY, ImageBindingStatus.BOUND, MediaCleanupStatus.ACTIVE,
+                        version, spec.digest(), null, null, null, 1000, 2000)));
+        when(imageRenditionRepository.findActiveImageProjections(anyCollection(), anyCollection()))
+                .thenReturn(List.of(rendition(id, ImageRole.PHOTO_DETAIL, 216, 432, version),
+                        rendition(id, ImageRole.PHOTO_DETAIL, 432, 864, version),
+                        rendition(id, ImageRole.PHOTO_DETAIL, 648, 1296, version)));
+        when(fileStorage.resolveFileUrl(anyString())).thenAnswer(invocation -> "https://cdn.test/" + invocation.getArgument(0));
+        assertThat(mediaPort.findImages(List.of(request)).get(request)).satisfies(image -> {
+            assertThat(image.status()).isEqualTo(MediaImageStatus.READY);
+            assertThat(image.defaultSource().width()).isEqualTo(432);
+            assertThat(image.defaultSource().height()).isEqualTo(864);
+            assertThat(image.defaultSource().url()).contains("/v" + version + "/photo-detail/432.webp");
+            assertThat(image.sourceSets()).hasSize(1);
+        });
     }
 }

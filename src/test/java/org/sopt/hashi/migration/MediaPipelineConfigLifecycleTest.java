@@ -127,7 +127,7 @@ class MediaPipelineConfigLifecycleTest {
                 "--server.shutdown=immediate",
                 "--spring.main.banner-mode=off",
                 "--logging.level.root=WARN",
-                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "--jwt.secret=" + "x".repeat(46),
                 "--kakao.client-id=test-client-id",
                 "--kakao.redirect-uri=https://app.hashi.test/callback",
                 "--hashi.storage.region=ap-northeast-2",

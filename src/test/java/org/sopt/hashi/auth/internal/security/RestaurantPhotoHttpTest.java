@@ -36,7 +36,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @Import({SecurityConfig.class, JwtAuthenticationFilter.class, JwtProvider.class,
         CookieUtil.class, OriginValidator.class, JwtAuthenticationEntryPoint.class, JwtAccessDeniedHandler.class})
 @TestPropertySource(properties = {
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "jwt.access-token-ttl=30m",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "jwt.access-token-ttl=30m",
         "jwt.refresh-token-ttl=14d", "jwt.onboarding-token-ttl=30m", "kakao.client-id=test-client-id",
         "kakao.redirect-uri=https://app.hashi.com/callback", "hashi.cors.allowed-origins=https://app.hashi.com",
         "springdoc.api-docs.enabled=false", "springdoc.swagger-ui.enabled=false"

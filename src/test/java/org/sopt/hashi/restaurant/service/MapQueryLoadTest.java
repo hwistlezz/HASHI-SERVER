@@ -57,7 +57,7 @@ import org.testcontainers.utility.DockerImageName;
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "server.address=127.0.0.1", "spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "kakao.client-id=test-client-id", "kakao.redirect-uri=https://app.hashi.test/callback",
         "hashi.storage.cloudfront-domain=https://cdn.hashi.test",
         "hashi.map.location-job.enabled=false", "hashi.map.google-geocoding.enabled=false",
@@ -67,7 +67,7 @@ import org.testcontainers.utility.DockerImageName;
         "hashi.restaurant.map.supported-bounds.south=10", "hashi.restaurant.map.supported-bounds.north=11",
         "hashi.restaurant.map.supported-bounds.west=20", "hashi.restaurant.map.supported-bounds.east=21",
         "hashi.restaurant.map.session.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "hashi.restaurant.map.session.signing-key=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "hashi.restaurant.map.session.limits.idle-timeout=10s",
         "hashi.restaurant.map.session.limits.max-lifetime=30s",
         "hashi.restaurant.map.session.limits.requests-per-caller=600",

@@ -101,7 +101,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         "hashi.media.cleanup.enabled=true",
         "hashi.media.cleanup.mode=DELETE",
         "hashi.media.cleanup.upload-safety-window=30m",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "kakao.client-id=test-client-id",
         "kakao.redirect-uri=https://app.hashi.test/callback",
         "hashi.storage.cloudfront-domain=https://cdn.hashi.test"

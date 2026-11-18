@@ -79,7 +79,7 @@ import org.testcontainers.utility.DockerImageName;
 @Testcontainers
 @SpringBootTest(properties = {
         "spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "kakao.client-id=test-client-id", "kakao.redirect-uri=https://app.hashi.test/callback",
         "hashi.storage.cloudfront-domain=https://cdn.hashi.test",
         "hashi.map.location-job.enabled=true", "hashi.map.location-job.retention=1d",

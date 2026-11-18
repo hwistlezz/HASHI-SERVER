@@ -68,7 +68,7 @@ import org.testcontainers.utility.DockerImageName;
 @AutoConfigureMockMvc
 @SpringBootTest(properties = {
         "spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "jwt.access-token-ttl=30m", "jwt.refresh-token-ttl=14d", "jwt.onboarding-token-ttl=30m",
         "kakao.client-id=test-client-id", "kakao.redirect-uri=https://app.hashi.test/callback",
         "hashi.storage.cloudfront-domain=https://cdn.hashi.test", "springdoc.api-docs.enabled=false",

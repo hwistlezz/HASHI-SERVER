@@ -90,7 +90,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         "spring.jpa.properties.hibernate.generate_statistics=true",
         "spring.datasource.hikari.transaction-isolation=TRANSACTION_READ_COMMITTED",
         "spring.flyway.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "kakao.client-id=test-client-id",
         "kakao.redirect-uri=https://app.hashi.test/callback",
         "hashi.storage.cloudfront-domain=https://cdn.hashi.test"

@@ -56,12 +56,12 @@ import org.testcontainers.utility.DockerImageName;
 @Testcontainers
 @SpringBootTest(properties = {
         "spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "kakao.client-id=test-client-id", "kakao.redirect-uri=https://app.hashi.test/callback",
         "hashi.storage.cloudfront-domain=https://cdn.hashi.test",
         "hashi.map.google-geocoding.enabled=false", "hashi.map.google-places.enabled=false",
         "hashi.map.places-selection.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "hashi.map.places-selection.signing-key=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "hashi.map.places-selection.token-ttl=10m",
         "hashi.map.maintenance.retention-enabled=false", "hashi.map.maintenance.refresh-ahead=3d",
         "hashi.map.location-job.max-attempts=1", "hashi.map.location-job.enabled=true",

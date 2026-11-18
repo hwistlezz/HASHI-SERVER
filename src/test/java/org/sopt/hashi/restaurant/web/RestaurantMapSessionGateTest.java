@@ -59,7 +59,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
         RestaurantMapPageService.class, MapCursorCodec.class, RestaurantMapSessionGateTest.Configuration.class})
 @EnableConfigurationProperties({MapSessionProperties.class, MapSessionLimits.class})
 @TestPropertySource(properties = {
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "jwt.access-token-ttl=30m", "jwt.refresh-token-ttl=14d", "jwt.onboarding-token-ttl=30m",
         "kakao.client-id=test-client-id", "kakao.redirect-uri=https://app.hashi.test/callback",
         "hashi.cors.allowed-origins=https://app.hashi.test",

@@ -89,7 +89,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         TransactionAutoConfiguration.class, FlywayAutoConfiguration.class})
 @TestPropertySource(properties = {
         "spring.jpa.open-in-view=true", "spring.jpa.hibernate.ddl-auto=validate", "spring.flyway.enabled=true",
-        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "jwt.access-token-ttl=30m",
+        "jwt.secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "jwt.access-token-ttl=30m",
         "jwt.refresh-token-ttl=14d", "jwt.onboarding-token-ttl=30m", "kakao.client-id=test-client-id",
         "kakao.redirect-uri=https://app.hashi.com/callback", "hashi.cors.allowed-origins=https://app.hashi.com",
         "springdoc.api-docs.enabled=false", "springdoc.swagger-ui.enabled=false"
